@@ -6,7 +6,7 @@ import os
 
 # Argument parser for input CSV and output directory
 parser = argparse.ArgumentParser(description="Visualize evaluation metrics from eval.py output CSV.")
-parser.add_argument('--csv', default='./eval/evaluation_output.csv', help='Path to the evaluation CSV file (output of eval.py)')
+parser.add_argument('--csv', default='./eval/ModelNet40_K256.csv', help='Path to the evaluation CSV file (output of eval.py)')
 parser.add_argument('--outdir', default='./figure', help='Directory to save plots')
 args = parser.parse_args()
 
