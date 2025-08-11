@@ -53,7 +53,8 @@ model_trained/
 model/
 
 # Data directories
-data/
+data/*
+!data/.gitkeep
 
 # Figures
 dist/

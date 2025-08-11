@@ -33,11 +33,6 @@ bash venv_gpu_setup.sh
 source venv_gpu/bin/activate
 ```
 
-Install dependencies:
-```bash
-pip install -r requirements_cpu.txt  # or requirements_gpu.txt
-```
-
 ## Usage
 
 All scripts should be run from within the activated virtual environment (`venv_cpu` or `venv_gpu`).
