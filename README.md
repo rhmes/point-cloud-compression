@@ -10,7 +10,8 @@ An improved patch-based deep autoencoder for 3D point cloud geometry compression
 - *RGB attribute compression is planned for future updates.*
 - Implements evaluation metrics: **PSNR**, **Chamfer Distance**, and **bitrate-per-pointcloud (bpp)**.
 - Installation scripts for both **CPU** and **GPU** machines.
-- Uses the produced `venv_{mode}` (e.g., `venv_cpu`, `venv_gpu`) to run all scripts.
+- Uses the produced `venv_{mode}` (e.g., `venv_gpu`, `venv_cpu`) to run all scripts.
+
 
 ## Requirements
 
@@ -18,20 +19,57 @@ An improved patch-based deep autoencoder for 3D point cloud geometry compression
 - See `requirements_cpu.txt` or `requirements_gpu.txt` for dependencies
 - Datasets: ModelNet, ShapeNet, or Stanford3D (see original [IPDAE documentation](https://github.com/I2-Multimedia-Lab/IPDAE) for dataset preparation)
 
+
 ## Installation
+
 
 Clone the repository and set up the environment:
 
+**For GPU (default):**
+```bash
+bash venv_gpu_setup.sh
+source venv_gpu/bin/activate
+```
 **For CPU:**
 ```bash
 bash venv_cpu_setup.sh
 source venv_cpu/bin/activate
 ```
-**For GPU:**
-```bash
-bash venv_gpu_setup.sh
-source venv_gpu/bin/activate
-```
+
+## Data Preparation
+
+### Option 1: Download Pre-Converted .ply Files (Recommended)
+
+Pre-converted .ply files for ModelNet40, ShapeNet, and S3DIS are available for direct download:
+
+- [ModelNet40 (8192 points, train/test)](https://drive.google.com/file/d/1Isa8seckZ9oNzstlE7VZcd6wVVx8LdMF/view?usp=sharing)
+- [ShapeNet (2048 points, test set)](https://drive.google.com/file/d/1OzaU01kolBpfRRD0zKESYh67Hh2s2dbD/view?usp=sharing)
+- [S3DIS Area 1 point clouds](https://drive.google.com/file/d/1etg29uMdV932CYmWijDD7OOupjXRKZJM/view?usp=sharing)
+
+### Option 2: Convert Raw Datasets Manually
+
+To prepare your own point clouds, follow the steps below for each dataset:
+
+**ModelNet40**
+1. Download ModelNet40 from [http://modelnet.cs.princeton.edu](http://modelnet.cs.princeton.edu)
+2. Convert .off CAD models to .ply point clouds:
+	```bash
+	python sample_modelnet.py ./data/ModelNet40 ./data/ModelNet40_pc_8192 --n_point 8192
+	```
+
+**ShapeNet**
+1. Download ShapeNet from [this link](https://shapenet.cs.stanford.edu/media/shapenetcore_partanno_segmentation_benchmark_v0_normal.zip)
+2. Sample point clouds:
+	```bash
+	python sample_shapenet.py ./data/shapenetcore_partanno_segmentation_benchmark_v0_normal ./data/ShapeNet_pc_2048 --n_point 2048
+	```
+
+**S3DIS**
+1. Download S3DIS from [http://buildingparser.stanford.edu/dataset.html](http://buildingparser.stanford.edu/dataset.html)
+2. Sample point clouds:
+	```bash
+	python sample_stanford3d.py ./data/Stanford3dDataset_v1.2_Aligned_Version/Area_1/*/*.txt ./data/Stanford3d_pc/Area_1
+	```
 
 ## Usage
 
