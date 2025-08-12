@@ -81,6 +81,18 @@ Compare original and reconstructed point clouds and display evaluation metrics:
 python compare.py --input_dir <compressed_ply_dir> --recon_dir <decompressed_ply_dir> --csv_path <metrics_csv>
 ```
 
+
+## (Optional) Jupyter Notebook Usage
+
+You can also use the provided Jupyter notebook for an interactive workflow:
+
+```bash
+jupyter notebook point_cloud_compression_demo.ipynb
+```
+
+The notebook demonstrates environment setup, dataset checks, training, compression, decompression, evaluation, and visualization in a step-by-step manner.
+
+
 ## Notes
 
 - For evaluation, additional metrics (PSNR, Chamfer distance, bpp) are included.
