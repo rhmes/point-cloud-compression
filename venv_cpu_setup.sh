@@ -4,14 +4,14 @@
 set -e
 
 # Step 1: Create and activate virtual environment
-python3 -m venv venv_mac
-source venv_mac/bin/activate
+python3 -m venv venv_cpu
+source venv_cpu/bin/activate
 
 # Step 2: Upgrade pip and core tools
 pip install --upgrade pip setuptools wheel
 
 # Step 3: Install additional project requirements
-pip install -r requirements_mac.txt
+pip install -r requirements_cpu.txt
 
 # Step 4: Ensure torch is available before installing PyTorch3D
 python -c "import torch; print(f'Torch version: {torch.__version__}')"
@@ -24,5 +24,5 @@ pip install open3d
 pip install "git+https://github.com/facebookresearch/pytorch3d.git"
 
 # Step 6: Install Open3D
-# Note: Open3D is installed via pip for macOS compatibility
-echo "✅ Environment setup complete for macOS (CPU)."
+# Note: Open3D is installed via pip for CPU compatibility
+echo "✅ Environment setup complete for CPU."
