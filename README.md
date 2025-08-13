@@ -71,7 +71,13 @@ To prepare your own point clouds, follow the steps below for each dataset:
 	python sample_stanford3d.py ./data/Stanford3dDataset_v1.2_Aligned_Version/Area_1/*/*.txt ./data/Stanford3d_pc/Area_1
 	```
 
+
 ## Usage
+
+> **Note:** Before running any scripts, make sure your virtual environment is activated. If not already activated, use:
+> ```bash
+source {venv_dir}/bin/activate  # replace {venv_dir} with venv_gpu or venv_cpu
+> ```
 
 All scripts should be run from within the activated virtual environment (`venv_cpu` or `venv_gpu`).
 
