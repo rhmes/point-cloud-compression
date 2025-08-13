@@ -1,8 +1,5 @@
 #!/bin/bash
 
-# Exit if any command fails
-set -e
-
 # Step 1: Create and activate virtual environment
 python3 -m venv venv_gpu
 source venv_gpu/bin/activate
