@@ -87,7 +87,7 @@ The project uses the same input structure and commands as the original IPDAE rep
 
 Train the autoencoder model on the ModelNet40 training set:
 ```bash
-python train.py './data/ModelNet40_pc_01_8192p/**/train/*.ply' './model/K256' --K 256
+python train.py --train_glob './data/ModelNet40_pc_01_8192p/**/train/*.ply' --model_save_folder './model/K256' --K 256
 ```
 
 ### 2. Compression
@@ -108,7 +108,7 @@ python decompress.py './data/ModelNet40_K256_compressed' './data/ModelNet40_K256
 
 Evaluate the compression results using PSNR, Chamfer distance, and bpp metrics:
 ```bash
-python eval.py './data/ModelNet40_pc_01_8192p/**/test/*.ply' './data/ModelNet40_K256_compressed' './data/ModelNet40_K256_decompressed' './eval/ModelNet40_K256.csv' '../geo_dist/build/pc_error'
+python eval.py --input_glob './data/ModelNet40_pc_01_8192p/**/test/*.ply' --compressed_path './data/ModelNet40_K256_compressed' --decompressed_path './data/ModelNet40_K256_decompressed' --output_file './eval/ModelNet40_K256.csv'
 ```
 
 ### 5. Visualization
