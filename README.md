@@ -1,7 +1,6 @@
 # Point Cloud Compression (IPDAE-based)
 
-An improved patch-based deep autoencoder for 3D point cloud geometry compression, based on the [IPDAE repository](https://github.com/I2-Multimedia-Lab/IPDAE). This project focuses on efficient geometry (XYZ) compression for large-scale 3D datasets, with support for ModelNet, ShapeNet, and Stanford3D.
-
+An improved patch-based deep autoencoder for 3D point cloud geometry compression, based on the [IPDAE repository](https://github.com/I2-Multimedia-Lab/IPDAE) ([paper](https://arxiv.org/pdf/2208.02519)). This project focuses on efficient geometry (XYZ) compression for large-scale 3D datasets, with support for ModelNet, ShapeNet, and
 ## Key Features
 
 - **Autoencoder-based model** for point cloud compression.
