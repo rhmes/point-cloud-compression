@@ -13,6 +13,7 @@ import pn_kit
 import AE
 import PPPF_AE
 from tqdm import tqdm
+import contextlib
 
 torch.cuda.manual_seed(11)
 torch.manual_seed(11)
@@ -52,7 +53,7 @@ parser.add_argument('--device', default=device, help='AE Model Device (cpu or cu
 parser.add_argument('--reset', action='store_true', help='Reset training and start from scratch (ignore saved model).')
 
 # Set model type, prob, loss criterion
-def set_model_and_probs(args, k):
+def set_model_and_probs(args):
     model_modules = {
         'AE': AE,
         'PPPF-AE': PPPF_AE
@@ -61,7 +62,7 @@ def set_model_and_probs(args, k):
         raise ValueError(f"Unknown model type: {args.model}")
     # Set model type
     model = model_modules[args.model]
-    ae = model.AE(K=args.K, k=k, d=args.d, L=args.L).to(args.device)
+    ae = model.AE(K=args.K, k=args.k, d=args.d, L=args.L).to(args.device)
     prob = model.ConditionalProbabilityModel(args.L, args.d).to(args.device)
     criterion = model.get_loss().to(args.device)
     return ae, prob, criterion
@@ -108,163 +109,180 @@ def dump_checkpoints(ae, prob, optimizer, model_save_folder, global_step=''):
     torch.save(optimizer.state_dict(), os.path.join(model_save_folder, f'optimizer_step{global_step}.pkl'))
     torch.save(global_step, os.path.join(model_save_folder, f'global_step{global_step}.pkl'))
 
-def main():
-    args = parser.parse_args()
-    # Set model parameters
-    N = args.N
-    N0 = args.N0
-    K = args.K
-    S = N * args.ALPHA // K
-    k = K // args.ALPHA
+def build_dataloader(args, points):
+    points_tensor = torch.Tensor(points)
+    dataset = Data.TensorDataset(points_tensor, points_tensor)
 
-    # Print training session info.
-    print(f"Processing on device (gpu/cpu): {args.device}")
-    print("Training session started...")
-    if args.model == 'AE':
-        print(f"Model: Autoencoder")
-    elif args.model == 'PPPF-AE':
-        print(f"Model: PointNet++ FoldingNet Autoencoder")
-
-    print(f"Point cloud resolution(N): {N}, Patch size(K): {K}, Number of patches(S): {S}, Bottleneck size(d): {args.d}, Quantization levels(L): {args.L}")
-
-    # CREATE MODEL SAVE PATH
-    if not os.path.exists(args.model_save_folder):
-        os.makedirs(args.model_save_folder)
-
-    files = np.array(glob(args.train_glob, recursive=True))
-    points = pn_kit.read_point_clouds(files)
-
-    print(f'Point train samples: {points.shape}, corrdinate range: [{points.min()}, {points.max()}]')
-
-    # PARSE TO DATASET
-    points_train_tensor = torch.Tensor(points)
-    torch_dataset = Data.TensorDataset(points_train_tensor, points_train_tensor)
-
-    use_cuda = str(args.device) == 'cuda' and torch.cuda.is_available()
+    use_cuda = (args.device == 'cuda' and torch.cuda.is_available())
     loader = Data.DataLoader(
-        dataset = torch_dataset,
-        batch_size = args.batch_size,
-        shuffle = True,
-        num_workers = 4,
+        dataset=dataset,
+        batch_size=args.batch_size,
+        shuffle=True,
+        num_workers=4,
         pin_memory=use_cuda
     )
+    return loader, use_cuda
 
-    # Set model type, loss criterion
-    ae, prob, criterion = set_model_and_probs(args, k)
+
+def prepare_model_and_optimizer(args):
+    ae, prob, criterion = set_model_and_probs(args)
     ae = ae.to(args.device)
     prob = prob.to(args.device)
-    criterion = criterion.to(args.device) if hasattr(criterion, 'to') else criterion
+    if hasattr(criterion, 'to'):
+        criterion = criterion.to(args.device)
 
-    # Create optimizer
-    optimizer = torch.optim.Adam(itertools.chain(ae.parameters(), prob.parameters()), lr=args.lr)
+    optimizer = torch.optim.Adam(
+        itertools.chain(ae.parameters(), prob.parameters()), 
+        lr=args.lr
+    )
+    return ae, prob, criterion, optimizer
 
-    # Load saved model if exists and not resetting
-    start_step = 0
-    total_epochs = args.max_steps // args.step_window
 
-    # Check if checkpoints exist (if not resetting - resume training)
+def resume_or_reset(args, ae, prob, optimizer):
     if not args.reset:
         start_step = load_checkpoints(ae, prob, optimizer, args.model_save_folder)
-        # print starting epoch number out of total epochs
-        print(f"Starting from step {start_step}, approx epoch {start_step // total_epochs*100}% "
-              f"out of {total_epochs} total epochs.")
-    elif args.reset:
-        print("Resetting training: starting from scratch.")
+        print(f"Resuming from step {start_step}")
+    else:
+        print("Resetting training from scratch.")
+        start_step = 0
+    return start_step
 
+def train_one_epoch(loader, ae, prob, criterion, optimizer, scaler, args, epoch, global_step, pbar):
+    ae.train()
+    prob.train()
 
     fbpps, bpps, losses = [], [], []
-    global_step = start_step
+    device = args.device
+    use_cuda = device == "cuda" and torch.cuda.is_available()
 
-    total_steps = args.max_steps
-    pbar = tqdm(total=total_steps, initial=global_step, desc="Train", unit="step")
-
-
-    scaler = torch.cuda.amp.GradScaler() if use_cuda else None
-    for epoch in range(9999):
-        for step, (batch_x, batch_x) in enumerate(loader):
-            if global_step > args.max_steps:
-                break
-
-            B = batch_x.shape[0]
-            batch_x = batch_x.to(args.device)
-
-            batch_x, center, longest = pn_kit.normalize(batch_x, margin=0.01)
-            optimizer.zero_grad()
-
-            if use_cuda:
-                autocast_ctx = torch.cuda.amp.autocast()
-            else:
-                from contextlib import nullcontext
-                autocast_ctx = nullcontext()
-            with autocast_ctx:
-                sampled_xyz = pn_kit.index_points(batch_x, pn_kit.farthest_point_sample_batch(batch_x, S))
-                octree_codes, sampled_bits = pn_kit.encode_sampled_np(sampled_xyz.detach().cpu().numpy(), scale=1, N=N, min_bpp=pn_kit.OCTREE_BPP_DICT[K])
-                rec_sampled_xyz = pn_kit.decode_sampled_np(octree_codes, scale=1)
-                rec_sampled_xyz = np.array(rec_sampled_xyz)
-                rec_sampled_xyz = torch.Tensor(rec_sampled_xyz).to(args.device)
-
-                dist, group_idx, grouped_xyz = knn_points(rec_sampled_xyz, batch_x, K=K, return_nn=True)
-                grouped_xyz -= rec_sampled_xyz.view(B, S, 1, 3)
-                x_patches_orig = grouped_xyz.view(B*S, K, 3)
-
-                x_patches = x_patches_orig * ((N / N0) ** (1/3))
-                patches_pred, bottleneck, latent_quantized = ae.forward(x_patches)
-
-                patches_pred = patches_pred / ((N / N0) ** (1/3))
-
-                pmf = prob(rec_sampled_xyz)
-                sym= (latent_quantized.view(B, S, args.d) + args.L // 2).long()
-                sym = sym.clamp(0, args.L - 1)
-
-                feature_bits = pn_kit.estimate_bits_from_pmf(pmf=pmf, sym=sym)
-
-                bpp = (sampled_bits + feature_bits) / B / N
-                fbpp = feature_bits / B / N
-
-                pc_pred = (patches_pred.view(B, S, -1, 3) + rec_sampled_xyz.view(B, S, 1, 3)).reshape(B, -1, 3)
-                pc_target = batch_x
-                if global_step < args.rate_loss_enable_step:
-                    loss = criterion(pc_pred, pc_target, fbpp, λ=0)
-                else:
-                    loss = criterion(pc_pred, pc_target, fbpp, λ=args.lamda)
-
-            if scaler:
-                scaler.scale(loss).backward()
-                scaler.step(optimizer)
-                scaler.update()
-            else:
-                loss.backward()
-                optimizer.step()
-            global_step += 1
-
-            pbar.set_postfix({"loss": loss.item()}, refresh=False)
-            pbar.update(1)
-
-            # PRINT
-            losses.append(loss.item())
-            fbpps.append(fbpp.item())
-            bpps.append(bpp.item())
-            if global_step % args.step_window == 0:
-                print(f'Epoch:{epoch} | Step:{global_step} | Feature bpp:{round(np.array(fbpps).mean(), 5)} | Bpp:{round(np.array(bpps).mean(), 5)} | Loss:{round(np.array(losses).mean(), 5)}')
-                losses, fbpps, bpps = [], [], []
-                # Save in-progress model for resume
-                dump_checkpoints(ae, prob, optimizer, args.model_save_folder, global_step)
-
-            # LEARNING RATE DECAY
-            if global_step % args.lr_decay_steps == 0:
-                args.lr = args.lr * args.lr_decay
-                for g in optimizer.param_groups:
-                    g['lr'] = args.lr
-                print(f'Learning rate decay triggered at step {global_step}, LR is setting to{args.lr}.')
-            
-            if global_step > args.max_steps:
-                break
-
+    for step, (batch_x, _) in enumerate(loader):
         if global_step > args.max_steps:
             break
 
+        batch_x = batch_x.to(device)
+        B = batch_x.size(0)
+
+        # Normalize input point cloud
+        batch_x, center, longest = pn_kit.normalize(batch_x, margin=0.01)
+
+        optimizer.zero_grad()
+
+        autocast_ctx = torch.cuda.amp.autocast() if use_cuda else contextlib.nullcontext()
+        with autocast_ctx:
+            # Step 1: Downsample point cloud (FPS)
+            sampled_xyz = pn_kit.index_points(batch_x, pn_kit.farthest_point_sample_batch(batch_x, args.S))
+
+            # Step 2: Encode/Decode with Octree
+            octree_codes, sampled_bits = pn_kit.encode_sampled_np(sampled_xyz.detach().cpu().numpy(), scale=1, N=args.N, min_bpp=pn_kit.OCTREE_BPP_DICT[args.K])
+            rec_sampled_xyz = pn_kit.decode_sampled_np(octree_codes, scale=1)
+            # Use torch.from_numpy for direct conversion, avoid extra np.array
+            if isinstance(rec_sampled_xyz, np.ndarray):
+                rec_sampled_xyz = torch.from_numpy(rec_sampled_xyz).to(args.device).float()
+            else:
+                rec_sampled_xyz = torch.tensor(rec_sampled_xyz, device=args.device, dtype=torch.float32)
+
+            # Step 3: Extract patches
+            dist, group_idx, grouped_xyz = knn_points(
+                rec_sampled_xyz, batch_x, K=args.K, return_nn=True
+            )
+            grouped_xyz -= rec_sampled_xyz.view(B, args.S, 1, 3)
+            x_patches_orig = grouped_xyz.view(B * args.S, args.K, 3)
+
+            # Step 4: Encode patches with AE
+            x_patches = x_patches_orig * ((args.N / args.N0) ** (1/3))
+            patches_pred, bottleneck, latent_quantized = ae(x_patches)
+            patches_pred = patches_pred / ((args.N / args.N0) ** (1/3))
+
+            # Step 5: Probability model
+            pmf = prob(rec_sampled_xyz)
+            sym = (latent_quantized.view(B, args.S, args.d) + args.L // 2).long()
+            sym = sym.clamp(0, args.L - 1)
+
+            feature_bits = pn_kit.estimate_bits_from_pmf(pmf, sym)
+
+            # Step 6: Rate-Distortion Loss
+            bpp = (sampled_bits + feature_bits) / (B * args.N)
+            fbpp = feature_bits / (B * args.N)
+
+            pc_pred = (
+                patches_pred.view(B, args.S, -1, 3) + rec_sampled_xyz.view(B, args.S, 1, 3)
+            ).reshape(B, -1, 3)
+
+            if global_step < args.rate_loss_enable_step:
+                loss = criterion(pc_pred, batch_x, fbpp, λ=0)
+            else:
+                loss = criterion(pc_pred, batch_x, fbpp, λ=args.lamda)
+
+        # Step 7: Backpropagation
+        if scaler:
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            loss.backward()
+            optimizer.step()
+        pbar.set_postfix({"loss": loss.item()})
+        pbar.update(1)
+        # Step 8: Logging
+        global_step += 1
+        losses.append(loss.item())
+        fbpps.append(fbpp.item())
+        bpps.append(bpp.item())
+
+        if global_step % args.step_window == 0:
+            print(f"[Epoch {epoch}] Step {global_step} | "
+                  f"Feature bpp: {np.mean(fbpps):.5f} | "
+                  f"Bpp: {np.mean(bpps):.5f} | "
+                  f"Loss: {np.mean(losses):.5f}")
+            losses, fbpps, bpps = [], [], []
+            dump_checkpoints(ae, prob, optimizer, args.model_save_folder, global_step)
+
+        # Step 9: LR Decay
+        if global_step % args.lr_decay_steps == 0:
+            args.lr *= args.lr_decay
+            for g in optimizer.param_groups:
+                g["lr"] = args.lr
+            print(f"LR decayed to {args.lr} at step {global_step}")
+
+    return global_step
+
+def main():
+    args = parser.parse_args()
+
+    # Derived params
+    N, N0, K = args.N, args.N0, args.K
+    args.S, args.k = N * args.ALPHA // K, K // args.ALPHA
+
+    # Model info
+    print(f"Training {args.model} on {args.device}")
+    print(f"N={N}, K={K}, S={args.S}, d={args.d}, L={args.L}")
+
+    # Create model save folder
+    os.makedirs(args.model_save_folder, exist_ok=True)
+
+    # Load training data
+    files = np.array(glob(args.train_glob, recursive=True))
+    points = pn_kit.read_point_clouds(files)
+    print(f"Loaded {points.shape} points, range: [{points.min()}, {points.max()}]")
+
+    # Dataset & loader
+    loader, use_cuda = build_dataloader(args, points)
+
+    # Model + optimizer
+    ae, prob, criterion, optimizer = prepare_model_and_optimizer(args)
+    start_step = resume_or_reset(args, ae, prob, optimizer)
+
+    scaler = torch.cuda.amp.GradScaler() if use_cuda else None
+    total_steps = args.max_steps
+    pbar = tqdm(total=total_steps, initial=start_step, desc="Training", unit="step")
+
+    global_step = start_step
+    for epoch in range(9999):
+        global_step = train_one_epoch(loader, ae, prob, criterion, optimizer, scaler, args, epoch, global_step, pbar)
+        if global_step > args.max_steps:
+            break
     pbar.close()
-    # Save the final model as generic model file at the end of training
+    # Save final checkpoints
     dump_checkpoints(ae, prob, optimizer, args.model_save_folder)
 
 if __name__ == "__main__":

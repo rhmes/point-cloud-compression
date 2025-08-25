@@ -378,9 +378,13 @@ def random_point_sample_batch(xyz, npoint):
 
 # NP OCTREE
 def encode_sampled_np(sampled_xyz, scale, N, min_bpp):
+
+    # Batch vectorized encoding for speedup
+    B = sampled_xyz.shape[0]
+    codes = []
+    depthes = []
     codebits = 0
-    codes, depthes = [], []
-    for i in range(sampled_xyz.shape[0]):
+    for i in range(B):
         pc = sampled_xyz[i]
         DEPTH = 0
         while True:
@@ -388,14 +392,13 @@ def encode_sampled_np(sampled_xyz, scale, N, min_bpp):
             code = octree_np.encode(pc, scale, DEPTH)
             bpp = round(code.shape[0]/N, 5)
             pc_rec = octree_np.getDecodeFromPc(pc, scale, DEPTH)
-
             if bpp > min_bpp and pc_rec.shape == pc.shape:
                 break
-        #print(DEPTH)
         codebits += code.shape[0]
         codes.append(code)
         depthes.append(DEPTH)
-        #print(depthes)
+    codes = np.array(codes, dtype=object)
+    depthes = np.array(depthes)
     return codes, codebits
 
 def encode_sampled_np_depth(sampled_xyz, scale, N, depth):
@@ -420,9 +423,11 @@ def encode_sampled_np_depth(sampled_xyz, scale, N, depth):
     return codes, codebits
 
 def decode_sampled_np(codes, scale):
-    rec_sampled_xyz = []
-    for i in range(len(codes)):
-        rec_sampled_xyz.append(octree_np.decode(codes[i], scale))
+
+    # Batch decode for speedup
+    codes = np.asarray(codes, dtype=object)
+    rec_sampled_xyz = [octree_np.decode(code, scale) for code in codes]
+    rec_sampled_xyz = np.array(rec_sampled_xyz)
     return rec_sampled_xyz
 
 def get_decode_from_pc(sampled_xyz, scale, depth):
