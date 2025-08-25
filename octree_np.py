@@ -88,8 +88,20 @@ def decode(bits, resolution):
 
 def getDecodeFromPc(pc, resolution, depth):
     cube_reso = resolution / (2 ** depth)
-    pc_octree = (pc // cube_reso * cube_reso) + (cube_reso / 2)
-    pc_octree = np.unique(pc_octree, axis=0)
-    #print(pc_octree)
+    # Prevent division by zero
+    if cube_reso == 0:
+        cube_reso = 1
+    pc = np.asarray(pc)
+    # Handle batch dimension: pc shape (B, N, 3) or (N, 3)
+    if pc.ndim == 3:
+        # Broadcast cube_reso to batch
+        cube_reso_arr = np.full((pc.shape[0], 1, 1), cube_reso)
+        pc_octree = (pc // cube_reso_arr * cube_reso_arr) + (cube_reso_arr / 2)
+        # Flatten batch for uniqueness
+        pc_octree = np.unique(pc_octree.reshape(-1, pc.shape[-1]), axis=0)
+    else:
+        pc_octree = (pc // cube_reso * cube_reso) + (cube_reso / 2)
+        pc_octree = np.unique(pc_octree, axis=0)
+    # print(pc_octree.shape)
     return pc_octree
 

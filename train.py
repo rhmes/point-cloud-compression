@@ -140,14 +140,20 @@ def main():
     points_train_tensor = torch.Tensor(points)
     torch_dataset = Data.TensorDataset(points_train_tensor, points_train_tensor)
 
+    use_cuda = str(args.device) == 'cuda' and torch.cuda.is_available()
     loader = Data.DataLoader(
         dataset = torch_dataset,
         batch_size = args.batch_size,
         shuffle = True,
+        num_workers = 4,
+        pin_memory=use_cuda
     )
 
     # Set model type, loss criterion
     ae, prob, criterion = set_model_and_probs(args, k)
+    ae = ae.to(args.device)
+    prob = prob.to(args.device)
+    criterion = criterion.to(args.device) if hasattr(criterion, 'to') else criterion
 
     # Create optimizer
     optimizer = torch.optim.Adam(itertools.chain(ae.parameters(), prob.parameters()), lr=args.lr)
@@ -170,9 +176,10 @@ def main():
     global_step = start_step
 
     total_steps = args.max_steps
-    pbar = tqdm(total=total_steps, initial=global_step, desc="Training Progress", unit="step")
+    pbar = tqdm(total=total_steps, initial=global_step, desc="Train", unit="step")
 
 
+    scaler = torch.cuda.amp.GradScaler() if use_cuda else None
     for epoch in range(9999):
         for step, (batch_x, batch_x) in enumerate(loader):
             if global_step > args.max_steps:
@@ -184,40 +191,53 @@ def main():
             batch_x, center, longest = pn_kit.normalize(batch_x, margin=0.01)
             optimizer.zero_grad()
 
-            sampled_xyz = pn_kit.index_points(batch_x, pn_kit.farthest_point_sample_batch(batch_x, S))
-            octree_codes, sampled_bits = pn_kit.encode_sampled_np(sampled_xyz.detach().cpu().numpy(), scale=1, N=N, min_bpp=pn_kit.OCTREE_BPP_DICT[K])
-            rec_sampled_xyz = pn_kit.decode_sampled_np(octree_codes, scale=1)
-            rec_sampled_xyz = np.array(rec_sampled_xyz)
-            rec_sampled_xyz = torch.Tensor(rec_sampled_xyz).to(args.device)
-
-            dist, group_idx, grouped_xyz = knn_points(rec_sampled_xyz, batch_x, K=K, return_nn=True)
-            grouped_xyz -= rec_sampled_xyz.view(B, S, 1, 3)
-            x_patches_orig = grouped_xyz.view(B*S, K, 3)
-
-            x_patches = x_patches_orig * ((N / N0) ** (1/3))
-            patches_pred, bottleneck, latent_quantized = ae.forward(x_patches)
-
-            patches_pred = patches_pred / ((N / N0) ** (1/3))
-
-            pmf = prob(rec_sampled_xyz)
-            sym= (latent_quantized.view(B, S, args.d) + args.L // 2).long()
-            sym = sym.clamp(0, args.L - 1)
-
-            feature_bits = pn_kit.estimate_bits_from_pmf(pmf=pmf, sym=sym)
-
-            bpp = (sampled_bits + feature_bits) / B / N
-            fbpp = feature_bits / B / N
-
-            pc_pred = (patches_pred.view(B, S, -1, 3) + rec_sampled_xyz.view(B, S, 1, 3)).reshape(B, -1, 3)
-            pc_target = batch_x
-            if global_step < args.rate_loss_enable_step:
-                loss = criterion(pc_pred, pc_target, fbpp, λ=0)
+            if use_cuda:
+                autocast_ctx = torch.cuda.amp.autocast()
             else:
-                loss = criterion(pc_pred, pc_target, fbpp, λ=args.lamda)
-            loss.backward()
-            optimizer.step()
+                from contextlib import nullcontext
+                autocast_ctx = nullcontext()
+            with autocast_ctx:
+                sampled_xyz = pn_kit.index_points(batch_x, pn_kit.farthest_point_sample_batch(batch_x, S))
+                octree_codes, sampled_bits = pn_kit.encode_sampled_np(sampled_xyz.detach().cpu().numpy(), scale=1, N=N, min_bpp=pn_kit.OCTREE_BPP_DICT[K])
+                rec_sampled_xyz = pn_kit.decode_sampled_np(octree_codes, scale=1)
+                rec_sampled_xyz = np.array(rec_sampled_xyz)
+                rec_sampled_xyz = torch.Tensor(rec_sampled_xyz).to(args.device)
+
+                dist, group_idx, grouped_xyz = knn_points(rec_sampled_xyz, batch_x, K=K, return_nn=True)
+                grouped_xyz -= rec_sampled_xyz.view(B, S, 1, 3)
+                x_patches_orig = grouped_xyz.view(B*S, K, 3)
+
+                x_patches = x_patches_orig * ((N / N0) ** (1/3))
+                patches_pred, bottleneck, latent_quantized = ae.forward(x_patches)
+
+                patches_pred = patches_pred / ((N / N0) ** (1/3))
+
+                pmf = prob(rec_sampled_xyz)
+                sym= (latent_quantized.view(B, S, args.d) + args.L // 2).long()
+                sym = sym.clamp(0, args.L - 1)
+
+                feature_bits = pn_kit.estimate_bits_from_pmf(pmf=pmf, sym=sym)
+
+                bpp = (sampled_bits + feature_bits) / B / N
+                fbpp = feature_bits / B / N
+
+                pc_pred = (patches_pred.view(B, S, -1, 3) + rec_sampled_xyz.view(B, S, 1, 3)).reshape(B, -1, 3)
+                pc_target = batch_x
+                if global_step < args.rate_loss_enable_step:
+                    loss = criterion(pc_pred, pc_target, fbpp, λ=0)
+                else:
+                    loss = criterion(pc_pred, pc_target, fbpp, λ=args.lamda)
+
+            if scaler:
+                scaler.scale(loss).backward()
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                loss.backward()
+                optimizer.step()
             global_step += 1
 
+            pbar.set_postfix({"loss": loss.item()}, refresh=False)
             pbar.update(1)
 
             # PRINT
