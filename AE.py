@@ -43,7 +43,6 @@ class AE(nn.Module):
         spread = self.L - 0.2
         latent = torch.sigmoid(latent) * spread - spread / 2
         latent_quantized_trans = self.quantize(latent)
-        #print(latent_quantized)
 
         # DECODE
         linear_output = self.inv_pool(latent_quantized_trans)
