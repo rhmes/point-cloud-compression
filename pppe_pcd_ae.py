@@ -83,7 +83,7 @@ class PointNetSetAbstraction(nn.Module):
 
         # 2) group: for each new_xyz centroid, find K nearest neighbors in xyz
         # knn_points expects input shapes (B, P, D) and (B, N, D)
-        dists, idx_knn, grouped_xyz = knn_points(new_xyz, xyz, K=self.K, return_nn=True)
+        dists, idx_knn, grouped_xyz = knn_points(new_xyz.float(), xyz.float(), K=self.K, return_nn=True)
         # grouped_xyz: (B, S, K, 3); subtract centroid to get local coords
         grouped_xyz = grouped_xyz - new_xyz.view(B, S, 1, 3)
 

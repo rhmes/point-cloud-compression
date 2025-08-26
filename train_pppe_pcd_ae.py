@@ -166,6 +166,9 @@ def train_one_epoch(loader, ae, criterion, optimizer, scaler, args, epoch, globa
             # fbpp calculation
             fbpp = estimate_bits_per_point(latent, prior="gaussian")
 
+            # Ensure float32 for chamfer_distance and knn_points
+            recon = recon.float()
+            batch_x = batch_x.float()
             # Rate–Distortion loss
             loss, dist, rate = criterion(recon, batch_x, fbpp, λ_eff)
 
