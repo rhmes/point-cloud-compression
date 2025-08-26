@@ -378,27 +378,26 @@ def random_point_sample_batch(xyz, npoint):
 
 # NP OCTREE
 def encode_sampled_np(sampled_xyz, scale, N, min_bpp):
-
-    # Batch vectorized encoding for speedup
+    # Vectorized batch encoding for reduced complexity
     B = sampled_xyz.shape[0]
-    codes = []
-    depthes = []
+    codes = [None] * B
+    depthes = np.ones(B, dtype=int)
     codebits = 0
-    for i in range(B):
-        pc = sampled_xyz[i]
-        DEPTH = 0
-        while True:
-            DEPTH += 1
+    MAX_DEPTH = 16  # Prevent infinite loop
+    for i, pc in enumerate(sampled_xyz):
+        DEPTH = 1
+        for attempt in range(MAX_DEPTH):
             code = octree_np.encode(pc, scale, DEPTH)
-            bpp = round(code.shape[0]/N, 5)
+            bpp = code.shape[0] / N
             pc_rec = octree_np.getDecodeFromPc(pc, scale, DEPTH)
-            if bpp > min_bpp and pc_rec.shape == pc.shape:
+            if (bpp > min_bpp and pc_rec.shape == pc.shape):
                 break
+            DEPTH += 1
+        # else:
+        #     print(f"Warning: encode did not converge for sample {i} after {MAX_DEPTH} attempts. Using last result.")
+        codes[i] = code
+        depthes[i] = DEPTH
         codebits += code.shape[0]
-        codes.append(code)
-        depthes.append(DEPTH)
-    codes = np.array(codes, dtype=object)
-    depthes = np.array(depthes)
     return codes, codebits
 
 def encode_sampled_np_depth(sampled_xyz, scale, N, depth):
@@ -423,19 +422,18 @@ def encode_sampled_np_depth(sampled_xyz, scale, N, depth):
     return codes, codebits
 
 def decode_sampled_np(codes, scale):
-
-    # Batch decode for speedup
-    codes = np.asarray(codes, dtype=object)
+    # Efficient batch decode using list comprehension
     rec_sampled_xyz = [octree_np.decode(code, scale) for code in codes]
-    rec_sampled_xyz = np.array(rec_sampled_xyz)
+    rec_sampled_xyz = np.stack(rec_sampled_xyz, axis=0)
+    # Always return [B, S, 3] shape
+    if rec_sampled_xyz.ndim == 2:
+        rec_sampled_xyz = rec_sampled_xyz[np.newaxis, ...]
     return rec_sampled_xyz
 
 def get_decode_from_pc(sampled_xyz, scale, depth):
-    rec_sampled_xyz = []
-    for i in range(sampled_xyz.shape[0]):
-        pc = sampled_xyz[i]
-        rec_sampled_xyz.append(octree_np.getDecodeFromPc(pc, scale, depth))
-    return rec_sampled_xyz
+    # Vectorized batch decode
+    rec_sampled_xyz = [octree_np.getDecodeFromPc(pc, scale, depth) for pc in sampled_xyz]
+    return np.stack(rec_sampled_xyz, axis=0)
     
 # PMF
 def estimate_bits_from_pmf(pmf, sym):

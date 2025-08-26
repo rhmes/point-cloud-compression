@@ -55,8 +55,16 @@ def decode(bits, resolution):
         bits_group = bits[idx:idx+n]
         depth = len(bits_ls) - 1
         bits_ls.append(bits_group)
-        n = sum(bits_group) * 8
-        idx += len(bits_group)
+        if not bits_group:  # Guard against empty group
+            break
+        # Flatten bits_group if it's a list of lists or array
+        bits = bits_group
+        if isinstance(bits, np.ndarray) and bits.ndim > 1:
+            bits = bits.flatten()
+        elif any(isinstance(i, (list, np.ndarray)) for i in bits):
+            bits = [item for sublist in bits for item in (sublist if isinstance(sublist, (list, np.ndarray)) else [sublist])]
+        n = sum(bits) * 8
+        idx += len(bits)
         if n == 0:
             break
     depth = len(bits_ls) - 1
@@ -92,8 +100,11 @@ def decode(bits, resolution):
     S = 64  # Default, change as needed or pass as argument
     if pc.shape[0] < S:
         # Pad with repeated points
-        pad = np.tile(pc[-1:], (S - pc.shape[0], 1)) if pc.shape[0] > 0 else np.zeros((S, 3), dtype=np.float32)
-        pc = np.concatenate([pc, pad], axis=0)
+        if pc.shape[0] > 0:
+            pad = np.tile(pc[-1:], (S - pc.shape[0], 1))
+            pc = np.concatenate([pc, pad], axis=0)
+        else:
+            pc = np.zeros((S, 3), dtype=np.float32)
     elif pc.shape[0] > S:
         # Randomly sample S points
         idx = np.random.choice(pc.shape[0], S, replace=False)
@@ -102,8 +113,10 @@ def decode(bits, resolution):
 
 def getDecodeFromPc(pc, resolution, depth):
 
-    cube_reso = float(resolution) / max(1, float(2 ** depth))
-    # Prevent cube_reso from being too small
+    import math
+    capped_depth = min(depth, 30)  # Prevent overflow, 2**30 is safe
+    divisor = max(1.0, math.pow(2.0, capped_depth))
+    cube_reso = float(resolution) / divisor
     if cube_reso < 1e-6:
         cube_reso = 1e-6
     pc = np.asarray(pc, dtype=np.float32)

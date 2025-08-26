@@ -73,8 +73,6 @@ def find_latest_checkpoint(folder, prefix):
     if not files:
         return ''
     steps = [int(f.split('step')[-1].split('.pkl')[0]) for f in files if 'step' in f]
-    if not steps:
-        return ''
     if steps:
         latest_step = max(steps)
     else:
@@ -172,15 +170,17 @@ def train_one_epoch(loader, ae, prob, criterion, optimizer, scaler, args, epoch,
             # Step 1: Downsample point cloud (FPS)
             sampled_xyz = pn_kit.index_points(batch_x, pn_kit.farthest_point_sample_batch(batch_x, args.S))
 
-            # Step 2: Encode/Decode with Octree
-            octree_codes, sampled_bits = pn_kit.encode_sampled_np(sampled_xyz.detach().cpu().numpy(), scale=1, N=args.N, min_bpp=pn_kit.OCTREE_BPP_DICT[args.K])
-            rec_sampled_xyz = pn_kit.decode_sampled_np(octree_codes, scale=1)
-            # Use torch.from_numpy for direct conversion, avoid extra np.array
-            if isinstance(rec_sampled_xyz, np.ndarray):
-                rec_sampled_xyz = torch.from_numpy(rec_sampled_xyz).to(args.device).float()
-            else:
-                rec_sampled_xyz = torch.tensor(rec_sampled_xyz, device=args.device, dtype=torch.float32)
-
+            # Step 2: Encode/Decode with Octree (optimized)
+            # Avoid repeated detach/cpu/numpy conversions
+            sampled_xyz_np = sampled_xyz.cpu().numpy() if sampled_xyz.device.type == 'cuda' else sampled_xyz.numpy()
+            octree_codes, sampled_bits = pn_kit.encode_sampled_np(sampled_xyz_np, scale=1, N=args.N, min_bpp=pn_kit.OCTREE_BPP_DICT[args.K])
+            rec_sampled_xyz_np = pn_kit.decode_sampled_np(octree_codes, scale=1)
+            # Direct conversion to torch tensor on target device
+            rec_sampled_xyz = torch.as_tensor(rec_sampled_xyz_np, device=args.device, dtype=torch.float32)
+            
+            # Debug shapes
+            # print(f"rec_sampled_xyz shape: {rec_sampled_xyz.shape}, batch_x shape: {batch_x.shape}")
+            
             # Step 3: Extract patches
             dist, group_idx, grouped_xyz = knn_points(
                 rec_sampled_xyz, batch_x, K=args.K, return_nn=True
@@ -271,7 +271,7 @@ def main():
     # Model + optimizer
     ae, prob, criterion, optimizer = prepare_model_and_optimizer(args)
     start_step = resume_or_reset(args, ae, prob, optimizer)
-
+    # start_step = 121
     scaler = torch.cuda.amp.GradScaler() if use_cuda else None
     total_steps = args.max_steps
     pbar = tqdm(total=total_steps, initial=start_step, desc="Training", unit="step")
