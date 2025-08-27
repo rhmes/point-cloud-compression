@@ -9,6 +9,7 @@ import contextlib
 
 import pn_kit
 import pppe_pcd_ae as AE  # AE: PointNet++ Encoder + PCN Decoder
+from pppe_pcd_ae import ConditionalProbabilityModel  # <-- NEW: conditional probability model
 
 torch.cuda.manual_seed(11)
 torch.manual_seed(11)
@@ -17,7 +18,7 @@ np.random.seed(11)
 
 parser = argparse.ArgumentParser(
     prog='train_p1.py',
-    description='Train autoencoder (PointNet++ + PCN)',
+    description='Train autoencoder (PointNet++ + PCN) with conditional prob model',
     formatter_class=argparse.ArgumentDefaultsHelpFormatter
 )
 
@@ -39,8 +40,10 @@ parser.add_argument('--reset', action='store_true')
 # ---------------------------------------------------
 def set_model_and_loss(args):
     ae = AE.PointCloudAE().to(args.device)   # PointNet++ + PCN
+    prob = ConditionalProbabilityModel().to(args.device)
+
     criterion = AE.get_loss().to(args.device)
-    return ae, criterion
+    return ae, prob, criterion
 
 # ---------------------------------------------------
 # Checkpoints
@@ -51,7 +54,7 @@ def find_latest_checkpoint(folder, file_prefix):
         path_list.append(os.path.join(folder, f"{prefix}_latest.pkl"))
     return path_list
 
-def load_checkpoints(ae, optimizer, folder):
+def load_checkpoints(ae, prob, optimizer, folder):
     start_step = 0
     file_prefix = ['ae', 'prob', 'optimizer', 'global']
     ae_path, prob_path, opt_path, step_path = find_latest_checkpoint(folder, file_prefix)
@@ -59,8 +62,8 @@ def load_checkpoints(ae, optimizer, folder):
         ae.load_state_dict(torch.load(ae_path))
         print(f"Loaded AE from {ae_path}")
     if os.path.exists(prob_path):
-        optimizer.load_state_dict(torch.load(prob_path))
-        print(f"Loaded optimizer from {prob_path}")
+        prob.load_state_dict(torch.load(prob_path))
+        print(f"Loaded Prob model from {prob_path}")
     if os.path.exists(opt_path):
         optimizer.load_state_dict(torch.load(opt_path))
         print(f"Loaded optimizer from {opt_path}")
@@ -69,13 +72,10 @@ def load_checkpoints(ae, optimizer, folder):
         print(f"Resuming at step {start_step}")
     return start_step
 
-def dump_checkpoints(ae, optimizer, folder, global_step, best=False):
-    """
-    Save model and optimizer checkpoints.
-    If best=True, save as *_best.pkl, else save as *_latest.pkl.
-    """
+def dump_checkpoints(ae, prob, optimizer, folder, global_step, best=False):
     suffix = 'best' if best else 'latest'
     torch.save(ae.state_dict(), os.path.join(folder, f'ae_{suffix}.pkl'))
+    torch.save(prob.state_dict(), os.path.join(folder, f'prob_{suffix}.pkl'))
     torch.save(optimizer.state_dict(), os.path.join(folder, f'optimizer_{suffix}.pkl'))
     torch.save(global_step, os.path.join(folder, f'global_{suffix}.pkl'))
 
@@ -91,59 +91,35 @@ def build_dataloader(args, points):
     return loader
 
 # ---------------------------------------------------
-# FBPP Calculation
+# Conditional FBPP Calculation
 # ---------------------------------------------------
-def estimate_bits_per_point(latent, prior="gaussian"):
+def estimate_bits_per_point_conditional(latent, prob_model):
     """
-    Estimate bits-per-point (bpp) for latent features using a simple entropy model.
-    
+    Estimate fbpp using ConditionalProbabilityModel
     Args:
-        latent : (B, N, D) latent tensor from encoder
-        prior  : str, probability model ("gaussian" | "laplacian")
-
+        latent: (B, C, N)
+        prob_model: ConditionalProbabilityModel
     Returns:
-        fbpp : scalar tensor (average bits per point)
+        fbpp : scalar tensor
     """
-    B, N, D = latent.shape
-    num_points = N
+    mean, scale = prob_model(latent)   # (B, C, N)
 
-    # Quantization simulation (straight-through estimator)
-    z_q = torch.round(latent)
-
-    # Estimate scale parameter per channel
-    if prior == "gaussian":
-        # σ per channel
-        scale = torch.std(z_q, dim=(0, 1)) + 1e-6
-        # Prob under Gaussian
-        log_probs = -0.5 * ((z_q / scale) ** 2 + torch.log(2 * torch.pi * scale**2))
-    elif prior == "laplacian":
-        # b per channel
-        scale = torch.mean(torch.abs(z_q), dim=(0, 1)) + 1e-6
-        # Prob under Laplace
-        log_probs = -torch.abs(z_q / scale) - torch.log(2 * scale)
-    else:
-        raise ValueError("Unsupported prior")
-
-    # Convert log-likelihood to bits
+    # Gaussian likelihood
+    log_probs = -0.5 * ((latent - mean) / scale) ** 2 - torch.log(scale * (2 * torch.pi) ** 0.5)
     bits = -log_probs / torch.log(torch.tensor(2.0, device=latent.device))
 
-    # Average over (B, N, D) → per-feature bits
-    bpp_features = bits.mean()
-
-    # Normalize to bits-per-point
-    fbpp = bpp_features * D / num_points
-
+    fbpp = bits.mean()
     return fbpp
 
 # ---------------------------------------------------
 # Training Loop
 # ---------------------------------------------------
-def train_one_epoch(loader, ae, criterion, optimizer, scaler, args, epoch, global_step, pbar,
+def train_one_epoch(loader, ae, prob, criterion, optimizer, scaler, args, epoch, global_step, pbar,
                     λ=1.0, grad_clip=1.0, anomaly_threshold=50.0):
     ae.train()
+    prob.train()
     losses, dists, rates = [], [], []
-    
-    # Track best loss and step
+
     if not hasattr(train_one_epoch, "best_loss"):
         train_one_epoch.best_loss = float('inf')
         train_one_epoch.best_step = -1    
@@ -156,78 +132,56 @@ def train_one_epoch(loader, ae, criterion, optimizer, scaler, args, epoch, globa
             break
 
         batch_x = batch_x.to(device)
-
-        # Normalize input point cloud
         batch_x, center, longest = pn_kit.normalize(batch_x, margin=0.01)
 
         optimizer.zero_grad()
         autocast_ctx = torch.cuda.amp.autocast() if use_cuda else contextlib.nullcontext()
 
-        # λ warmup (gradually introduce rate term)
         λ_eff = λ * min(1.0, global_step / max(1, args.warmup_steps))
 
         with autocast_ctx:
-            # Forward pass
-            recon, latent = ae(batch_x)
+            recon, latent, _ = ae(batch_x)
 
-            # Fbpp calculation
-            fbpp = estimate_bits_per_point(latent, prior="gaussian")
+            fbpp = estimate_bits_per_point_conditional(latent, prob)
 
-            # Ensure float32 for chamfer_distance and knn_points
             recon = recon.float()
             batch_x = batch_x.float()
-            # Rate–Distortion loss
             loss, dist, rate = criterion(recon, batch_x, fbpp, λ_eff)
 
-        # Skip anomalous batches
         if (torch.isnan(loss) or torch.isinf(loss) or loss.item() > anomaly_threshold):
             print(f"[Warning] Skipping step {global_step} due to abnormal loss = {loss.item():.4f}")
             global_step += 1
             continue
 
-        # Backpropagation
         if scaler:
             scaler.scale(loss).backward()
-            # Gradient clipping
             scaler.unscale_(optimizer)
-            torch.nn.utils.clip_grad_norm_(ae.parameters(), grad_clip)
+            torch.nn.utils.clip_grad_norm_(list(ae.parameters()) + list(prob.parameters()), grad_clip)
             scaler.step(optimizer)
             scaler.update()
         else:
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(ae.parameters(), grad_clip)
+            torch.nn.utils.clip_grad_norm_(list(ae.parameters()) + list(prob.parameters()), grad_clip)
             optimizer.step()
 
-        # Logging
         global_step += 1
         losses.append(loss.item())
         dists.append(dist.item())
         rates.append(rate.item())
 
-        pbar.set_postfix({
-            "loss": f"{loss.item():.4f}",
-            "dist": f"{dist.item():.4f}",
-            "bloss": f"{train_one_epoch.best_loss:.4f}"
-        })
+        pbar.set_postfix({"loss": f"{loss.item():.4f}", "dist": f"{dist.item():.4f}"})
         pbar.update(1)
 
-        # Step window logging
         if global_step % args.step_window == 0:
-            # Track best loss and step
             if loss.item() < train_one_epoch.best_loss:
                 train_one_epoch.best_loss = loss.item()
                 train_one_epoch.best_step = global_step
-                dump_checkpoints(ae, optimizer, args.model_save_folder, train_one_epoch.best_step, best=True)
-            # Print best loss and step
+                dump_checkpoints(ae, prob, optimizer, args.model_save_folder, train_one_epoch.best_step, best=True)
             print(f"[Epoch {epoch}] Step {global_step} | "
-                f"Loss: {np.mean(losses):.5f} | "
-                f"Dist: {np.mean(dists):.5f} | "
-                f"Rate: {np.mean(rates):.5f}")
+                  f"Loss: {np.mean(losses):.5f} | Dist: {np.mean(dists):.5f} | Rate: {np.mean(rates):.5f}")
             losses, dists, rates = [], [], []
-            # Save latest checkpoint
-            dump_checkpoints(ae, optimizer, args.model_save_folder, global_step, best=False)
-            
-        # LR decay
+            dump_checkpoints(ae, prob, optimizer, args.model_save_folder, global_step, best=False)
+
         if global_step % args.lr_decay_steps == 0:
             args.lr *= args.lr_decay
             for g in optimizer.param_groups:
@@ -239,7 +193,7 @@ def train_one_epoch(loader, ae, criterion, optimizer, scaler, args, epoch, globa
 
 def main():
     args = parser.parse_args()
-    print(f"Training PointNet++ + PCN on {args.device}")
+    print(f"Training PointNet++ + PCN + ProbModel on {args.device}")
 
     os.makedirs(args.model_save_folder, exist_ok=True)
 
@@ -248,13 +202,15 @@ def main():
     print(f"Loaded {points.shape} points")
 
     loader = build_dataloader(args, points)
-    ae, criterion = set_model_and_loss(args)
+    ae, prob, criterion = set_model_and_loss(args)
 
-    optimizer = torch.optim.Adam(ae.parameters(), lr=args.lr)
+    optimizer = torch.optim.Adam(
+        list(ae.parameters()) + list(prob.parameters()), lr=args.lr
+    )
     scaler = torch.cuda.amp.GradScaler() if args.device == 'cuda' else None
 
     if not args.reset:
-        start_step = load_checkpoints(ae, optimizer, args.model_save_folder)
+        start_step = load_checkpoints(ae, prob, optimizer, args.model_save_folder)
     else:
         start_step = 0
         print("Starting training from scratch.")
@@ -264,12 +220,12 @@ def main():
 
     global_step = start_step
     for epoch in range(9999):
-        global_step = train_one_epoch(loader, ae, criterion, optimizer, scaler, args, epoch, global_step, pbar)
+        global_step = train_one_epoch(loader, ae, prob, criterion, optimizer, scaler, args, epoch, global_step, pbar)
         if global_step > args.max_steps:
             break
 
     pbar.close()
-    dump_checkpoints(ae, optimizer, args.model_save_folder, global_step, best=False)
+    dump_checkpoints(ae, prob, optimizer, args.model_save_folder, global_step, best=False)
 
 if __name__ == "__main__":
     main()
