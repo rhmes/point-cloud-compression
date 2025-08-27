@@ -25,6 +25,8 @@ parser = argparse.ArgumentParser(
 parser.add_argument('--train_glob', default='./data/ModelNet40_pc_01_8192p/**/train/*.ply')
 parser.add_argument('--model_save_folder', default='./model/P1/')
 parser.add_argument('--N', type=int, default=8192, help='Point cloud resolution.')
+parser.add_argument('--K', type=int, default=8192, help='Latent space dimension.')
+parser.add_argument('--L', type=int, default=7, help='Quantization level.')
 parser.add_argument('--lr', type=float, default=0.0005, help='Learning rate.')
 parser.add_argument('--batch_size', type=int, default=4)
 parser.add_argument('--max_steps', type=int, default=80000)
@@ -39,8 +41,8 @@ parser.add_argument('--reset', action='store_true')
 # Model + Loss
 # ---------------------------------------------------
 def set_model_and_loss(args):
-    ae = AE.PointCloudAE().to(args.device)   # PointNet++ + PCN
-    prob = ConditionalProbabilityModel().to(args.device)
+    ae = AE.PointCloudAE(latent_dim=args.K, L=args.L, npoints=args.N).to(args.device)   # PointNet++ + PCN
+    prob = ConditionalProbabilityModel(latent_dim=args.K).to(args.device)
 
     criterion = AE.get_loss().to(args.device)
     return ae, prob, criterion
@@ -93,22 +95,44 @@ def build_dataloader(args, points):
 # ---------------------------------------------------
 # Conditional FBPP Calculation
 # ---------------------------------------------------
-def estimate_bits_per_point_conditional(latent, prob_model):
+def estimate_bits_per_point_conditional(input, latent_quantized, prob_model):
     """
-    Estimate fbpp using ConditionalProbabilityModel
+    Estimate bits-per-point (fbpp) using ConditionalProbabilityModel.
     Args:
-        latent: (B, C, N)
+        input: (B, C, N) tensor, input features
+        latent_quantized: (B, C, N) tensor, quantized latent
         prob_model: ConditionalProbabilityModel
     Returns:
-        fbpp : scalar tensor
+        fbpp: scalar tensor
     """
-    mean, scale = prob_model(latent)   # (B, C, N)
+    # Get mean and scale from probability model
+    mean, scale, pmf = prob_model(input)  # (B, C, N)
+    # Clamp scale for numerical stability
+    scale = scale.clamp(min=1e-6)
+    # # Estimate feature bits from PMF
+    # latent_quantized = latent_quantized.long()
 
-    # Gaussian likelihood
-    log_probs = -0.5 * ((latent - mean) / scale) ** 2 - torch.log(scale * (2 * torch.pi) ** 0.5)
-    bits = -log_probs / torch.log(torch.tensor(2.0, device=latent.device))
+    # B, N, C = input.shape
+    # # Convert [B, N] to [B, N, 1]
+    # if latent_quantized.dim() == 2:
+    #     latent_quantized = latent_quantized.unsqueeze(-1)
 
-    fbpp = bits.mean()
+    # latent_quantized = latent_quantized.clamp(min=0, max=latent_quantized.size(1) - 1)
+    # feature_bits = pn_kit.estimate_bits_from_pmf(pmf, latent_quantized)
+
+    # Gaussian likelihood (log prob in nats)
+    mean = mean.permute(0, 2, 1)
+    scale = scale.permute(0, 2, 1)
+    log_probs = -0.5 * ((input - mean) / scale) ** 2 - torch.log(scale * (2 * torch.pi) ** 0.5)
+    # Convert nats to bits
+    bits = -log_probs / torch.log(torch.tensor(2.0, device=input.device, dtype=input.dtype))
+    # Add feature bits
+    
+    # # bits = bits + feature_bits
+    # feature_bits = feature_bits/(B * N)
+
+    # Mean bits-per-point
+    fbpp = bits.mean() 
     return fbpp
 
 # ---------------------------------------------------
@@ -140,17 +164,18 @@ def train_one_epoch(loader, ae, prob, criterion, optimizer, scaler, args, epoch,
         λ_eff = λ * min(1.0, global_step / max(1, args.warmup_steps))
 
         with autocast_ctx:
-            recon, latent, _ = ae(batch_x)
-
-            fbpp = estimate_bits_per_point_conditional(latent, prob)
+            recon, latent, feats, latent_quantized = ae(batch_x)
+            fbpp = estimate_bits_per_point_conditional(batch_x, latent_quantized, prob)
 
             recon = recon.float()
             batch_x = batch_x.float()
             loss, dist, rate = criterion(recon, batch_x, fbpp, λ_eff)
 
-        if (torch.isnan(loss) or torch.isinf(loss) or loss.item() > anomaly_threshold):
-            print(f"[Warning] Skipping step {global_step} due to abnormal loss = {loss.item():.4f}")
-            global_step += 1
+        # Clamp without detaching
+        loss = torch.clamp(loss, min=0.0, max=anomaly_threshold)
+
+        if torch.isnan(loss) or torch.isinf(loss):
+            print(f"[Warning] Loss anomaly detected: {loss.item():.4f} to {anomaly_threshold}")
             continue
 
         if scaler:

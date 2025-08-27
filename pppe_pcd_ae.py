@@ -220,7 +220,7 @@ class PointNet2EncoderFull(nn.Module):
 # -------------------------
 
 class PointNet2Encoder(nn.Module):
-    def __init__(self, latent_dim=256):
+    def __init__(self, latent_dim=256, npoints=8192):
         super().__init__()
         self.mlp1 = nn.Sequential(nn.Linear(3, 64), nn.ReLU())
         self.mlp2 = nn.Sequential(nn.Linear(64, 128), nn.ReLU())
@@ -234,22 +234,22 @@ class PointNet2Encoder(nn.Module):
         return latent, feat_global
 
 class PCNDecoder(nn.Module):
-    def __init__(self, latent_dim=256, coarse_points=1024, final_points=2048):
+    def __init__(self, latent_dim=256, coarse_points=1024, final_npoints=8192):
         super().__init__()
         self.fc_coarse = nn.Sequential(
             nn.Linear(latent_dim, 1024), nn.ReLU(),
             nn.Linear(1024, coarse_points * 3)
         )
         self.expansion = nn.Sequential(
-            nn.Linear(coarse_points*3, final_points*3)
+            nn.Linear(coarse_points*3, final_npoints*3)
         )
         self.coarse_points = coarse_points
-        self.final_points = final_points
+        self.final_npoints = final_npoints
 
     def forward(self, latent):
         B = latent.size(0)
         coarse = self.fc_coarse(latent).view(B, self.coarse_points, 3)
-        fine = self.expansion(coarse.view(B, -1)).view(B, self.final_points, 3)
+        fine = self.expansion(coarse.view(B, -1)).view(B, self.final_npoints, 3)
         return coarse, fine
 
 class ConditionalProbabilityModel(nn.Module):
@@ -260,7 +260,7 @@ class ConditionalProbabilityModel(nn.Module):
     Conditioning: per-point features from PointNet2Encoder (B, F, N)
     Output: mean and scale parameters for entropy model
     """
-    def __init__(self, hidden_channels=128, latent_dim=256):
+    def __init__(self, hidden_channels=128, latent_dim=256, npoints=8192):
         super(ConditionalProbabilityModel, self).__init__()
         # PointNet++ encoder backbone
         self.encoder = PointNet2Encoder(latent_dim=latent_dim)
@@ -275,6 +275,9 @@ class ConditionalProbabilityModel(nn.Module):
         )
         self.mean_head = nn.Conv1d(hidden_channels, 3, 1)
         self.scale_head = nn.Conv1d(hidden_channels, 3, 1)
+        # PMF head (softmax across bins)
+        self.pmf_head = nn.Conv1d(hidden_channels, latent_dim, 1)
+        self.latent_dim = latent_dim
 
     def forward(self, y):
         """
@@ -285,19 +288,25 @@ class ConditionalProbabilityModel(nn.Module):
             scale: (B, 3, N)
         """
         B, S, _ = y.shape
-        _, cond_feats = self.encoder(y)   # (B, 128, N)
+        _, feats = self.encoder(y)   # (B, 128, N)
 
         # Expand global feature to all points
-        feature_expand = cond_feats.unsqueeze(1).repeat(1, S, 1)     # (B, S, 128)
+        feats = feats.unsqueeze(1).repeat(1, S, 1)     # (B, S, 128)
 
-        x = torch.cat([y, feature_expand], dim=2)  # (B, S, d+128)
-        x = x.permute(0, 2, 1)              # (B, (d+128), N)
-        h = self.model_mlp(x)              # (B, hidden, N)
-        mean = self.mean_head(h).permute(0, 2, 1)           # (B, N, 3)
-        scale = F.softplus(self.scale_head(h)) + 1e-6
-        scale = scale.permute(0, 2, 1)                        # (B, N, 3)
-        return mean, scale
-        
+        # Concatenate latent + features
+        x = torch.cat([y, feats], dim=2).permute(0, 2, 1)  # (B, 3+F, N)
+        x = self.model_mlp(x)  # (B, hidden, N)
+
+        # Distribution parameters
+        mean = self.mean_head(x)  # (B, 3, N)
+        scale = F.softplus(self.scale_head(x)) + 1e-6  # ensure positivity
+
+        # PMF: discretized bins, normalized
+        pmf_logits = self.pmf_head(x)  # (B, K, N)
+        pmf = F.softmax(pmf_logits, dim=1)  # (B, K, N)
+
+        return mean, scale, pmf
+
 # Loss calculation class
 class RateDistortionLoss(nn.Module):
     def __init__(self, loss_type="hybrid", alpha=0.7, eps=1e-9):
@@ -350,12 +359,19 @@ class get_loss(nn.Module):
         return self.criterion(pc_pred, pc_target, fbpp, λ=λ)
 
 class PointCloudAE(nn.Module):
-    def __init__(self, latent_dim=256):
+    def __init__(self, latent_dim=256, L=7, npoints=8192):
         super().__init__()
-        self.encoder = PointNet2Encoder(latent_dim=latent_dim)
-        self.decoder = PCNDecoder(latent_dim=latent_dim)
+        self.encoder = PointNet2Encoder(latent_dim=latent_dim, npoints=npoints)
+        self.decoder = PCNDecoder(latent_dim=latent_dim, final_npoints=npoints)
+        self.L = L
+        # Quantizer function (sigmoid + scaling)
+        self.quantize = lambda x: torch.round(x)
 
     def forward(self, x):
-        latent, cond_feats = self.encoder(x)          # (B, latent_dim)
-        coarse, fine = self.decoder(latent)
-        return coarse, fine, cond_feats
+        latent, feats = self.encoder(x)          # (B, latent_dim)
+        # Quantization step
+        spread = self.L - 0.2
+        latent = torch.sigmoid(latent) * spread - spread / 2
+        latent_quantized = self.quantize(latent)
+        coarse, fine = self.decoder(latent_quantized)
+        return coarse, fine, feats, latent_quantized
