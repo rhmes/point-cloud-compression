@@ -1,12 +1,12 @@
-import torch.nn as nn
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 from pytorch3d.ops.knn import knn_points
 from pytorch3d.loss import chamfer_distance
 
 from pn_kit import farthest_point_sample_batch, index_points
 
-# --- PointNet++ expanded implementation (paste into pn_kit.py) ---
+# --- PointNet++ expanded implementation ---
 
 # -------------------------
 # Utility conv blocks
@@ -214,15 +214,6 @@ class PointNet2EncoderFull(nn.Module):
         global_feat = global_feat.unsqueeze(-1)  # (B, C_out, 1) for conv1d
         latent = self.global_conv(global_feat).squeeze(-1)  # (B, latent_dim)
         return latent
-
-# -------------------------
-# End of expanded PointNet++ encoder
-# -------------------------
-
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from pytorch3d.ops.knn import knn_points
 
 # -------------------------
 # Utility conv blocks

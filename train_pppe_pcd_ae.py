@@ -1,6 +1,5 @@
 import os
 import argparse
-import itertools
 import numpy as np
 import torch
 import torch.utils.data as Data
@@ -46,24 +45,22 @@ def set_model_and_loss(args):
 # ---------------------------------------------------
 # Checkpoints
 # ---------------------------------------------------
-def find_latest_checkpoint(folder, prefix):
-    files = [f for f in os.listdir(folder) if f.startswith(prefix) and f.endswith('.pkl')]
-    if not files:
-        return ''
-    steps = [int(f.split('step')[-1].split('.pkl')[0]) for f in files if 'step' in f]
-    if steps:
-        latest_step = max(steps)
-        return os.path.join(folder, f"{prefix}_step{latest_step}.pkl")
-    return ''
+def find_latest_checkpoint(folder, file_prefix):
+    path_list = []
+    for prefix in file_prefix:
+        path_list.append(os.path.join(folder, f"{prefix}_latest.pkl"))
+    return path_list
 
 def load_checkpoints(ae, optimizer, folder):
     start_step = 0
-    ae_path = find_latest_checkpoint(folder, 'ae')
-    opt_path = find_latest_checkpoint(folder, 'optimizer')
-    step_path = find_latest_checkpoint(folder, 'global')
+    file_prefix = ['ae', 'prob', 'optimizer', 'global']
+    ae_path, prob_path, opt_path, step_path = find_latest_checkpoint(folder, file_prefix)
     if os.path.exists(ae_path):
         ae.load_state_dict(torch.load(ae_path))
         print(f"Loaded AE from {ae_path}")
+    if os.path.exists(prob_path):
+        optimizer.load_state_dict(torch.load(prob_path))
+        print(f"Loaded optimizer from {prob_path}")
     if os.path.exists(opt_path):
         optimizer.load_state_dict(torch.load(opt_path))
         print(f"Loaded optimizer from {opt_path}")
@@ -72,10 +69,15 @@ def load_checkpoints(ae, optimizer, folder):
         print(f"Resuming at step {start_step}")
     return start_step
 
-def dump_checkpoints(ae, optimizer, folder, global_step):
-    torch.save(ae.state_dict(), os.path.join(folder, f'ae_step{global_step}.pkl'))
-    torch.save(optimizer.state_dict(), os.path.join(folder, f'optimizer_step{global_step}.pkl'))
-    torch.save(global_step, os.path.join(folder, f'global_step{global_step}.pkl'))
+def dump_checkpoints(ae, optimizer, folder, global_step, best=False):
+    """
+    Save model and optimizer checkpoints.
+    If best=True, save as *_best.pkl, else save as *_latest.pkl.
+    """
+    suffix = 'best' if best else 'latest'
+    torch.save(ae.state_dict(), os.path.join(folder, f'ae_{suffix}.pkl'))
+    torch.save(optimizer.state_dict(), os.path.join(folder, f'optimizer_{suffix}.pkl'))
+    torch.save(global_step, os.path.join(folder, f'global_{suffix}.pkl'))
 
 # ---------------------------------------------------
 # Data Loader
@@ -140,6 +142,11 @@ def train_one_epoch(loader, ae, criterion, optimizer, scaler, args, epoch, globa
                     λ=1.0, grad_clip=1.0, anomaly_threshold=50.0):
     ae.train()
     losses, dists, rates = [], [], []
+    
+    # Track best loss and step
+    if not hasattr(train_one_epoch, "best_loss"):
+        train_one_epoch.best_loss = float('inf')
+        train_one_epoch.best_step = -1    
 
     device = args.device
     use_cuda = device == "cuda" and torch.cuda.is_available()
@@ -163,7 +170,7 @@ def train_one_epoch(loader, ae, criterion, optimizer, scaler, args, epoch, globa
             # Forward pass
             recon, latent = ae(batch_x)
 
-            # fbpp calculation
+            # Fbpp calculation
             fbpp = estimate_bits_per_point(latent, prior="gaussian")
 
             # Ensure float32 for chamfer_distance and knn_points
@@ -198,21 +205,28 @@ def train_one_epoch(loader, ae, criterion, optimizer, scaler, args, epoch, globa
         rates.append(rate.item())
 
         pbar.set_postfix({
-            "loss": f"{loss.item():.5f}",
-            "dist": f"{dist.item():.5f}",
-            "rate": f"{rate.item():.5f}"
+            "loss": f"{loss.item():.4f}",
+            "dist": f"{dist.item():.4f}",
+            "bloss": f"{train_one_epoch.best_loss:.4f}"
         })
         pbar.update(1)
 
         # Step window logging
         if global_step % args.step_window == 0:
+            # Track best loss and step
+            if loss.item() < train_one_epoch.best_loss:
+                train_one_epoch.best_loss = loss.item()
+                train_one_epoch.best_step = global_step
+                dump_checkpoints(ae, optimizer, args.model_save_folder, train_one_epoch.best_step, best=True)
+            # Print best loss and step
             print(f"[Epoch {epoch}] Step {global_step} | "
-                  f"Loss: {np.mean(losses):.5f} | "
-                  f"Dist: {np.mean(dists):.5f} | "
-                  f"Rate: {np.mean(rates):.5f}")
+                f"Loss: {np.mean(losses):.5f} | "
+                f"Dist: {np.mean(dists):.5f} | "
+                f"Rate: {np.mean(rates):.5f}")
             losses, dists, rates = [], [], []
-            dump_checkpoints(ae, optimizer, args.model_save_folder, global_step)
-
+            # Save latest checkpoint
+            dump_checkpoints(ae, optimizer, args.model_save_folder, global_step, best=False)
+            
         # LR decay
         if global_step % args.lr_decay_steps == 0:
             args.lr *= args.lr_decay
@@ -222,7 +236,7 @@ def train_one_epoch(loader, ae, criterion, optimizer, scaler, args, epoch, globa
 
     return global_step
 
-# ---------------------------------------------------
+
 def main():
     args = parser.parse_args()
     print(f"Training PointNet++ + PCN on {args.device}")
@@ -255,7 +269,7 @@ def main():
             break
 
     pbar.close()
-    dump_checkpoints(ae, optimizer, args.model_save_folder, global_step)
+    dump_checkpoints(ae, optimizer, args.model_save_folder, global_step, best=False)
 
 if __name__ == "__main__":
     main()
