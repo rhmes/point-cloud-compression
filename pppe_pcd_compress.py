@@ -74,8 +74,8 @@ def main(args):
     device = torch.device(args.device)
 
     # Load models
-    ae = PointNet2AE().to(device)
-    prob = ConditionalProbabilityModel().to(device)
+    ae = PointNet2AE(latent_dim=args.K, L=args.L, npoints=args.N).to(device)
+    prob = ConditionalProbabilityModel(latent_dim=args.K).to(device)
     op = torch.optim.Adam(list(ae.parameters()) + list(prob.parameters()), lr=1e-4)  
     _ = load_checkpoints(ae, prob, op, args.model_load_folder)
 
@@ -95,7 +95,8 @@ def main(args):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Batch Point Cloud Compression")
+    parser = argparse.ArgumentParser(description="Batch Point Cloud Compression",
+                                    formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 
     parser.add_argument('input_glob', help='Point clouds glob pattern for compression.',
                         default='/mnt/hdd/datasets_yk/ModelNet40_pc_01_8192p/**/test/*.ply')
@@ -103,10 +104,12 @@ if __name__ == "__main__":
                         default='./data/ModelNet40_K256_compressed/')
     parser.add_argument('model_load_folder', help='Directory where to load trained models.',
                         default='./model/K256/')
-    parser.add_argument('N', help='Number of points for the model.',
+    parser.add_argument('--N', help='Number of points for the model.',
                         default=8192)
-    parser.add_argument('K', help='Latent space dimension.',
+    parser.add_argument('--K', help='Latent space dimension.',
                         default=256)
+    parser.add_argument('--L', type=int, help='Quantization level.', 
+                        default=7)
 
     # Device option
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')

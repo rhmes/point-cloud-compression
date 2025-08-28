@@ -38,7 +38,12 @@ def save_point_cloud(points, out_path):
 def decompress(ae, latent, out_ply):
     ae.eval()
     with torch.no_grad():
-        # latent: [N, d] or [1, N, d]        
+        # latent: [N, d] or [1, N, d]   
+        # Quantization step
+        spread = L - 0.2
+        quantize = lambda x: torch.round(x)
+        latent = torch.sigmoid(latent) * spread - spread / 2
+        latent_quantized = quantize(latent)     
         coarse, fine = ae.decoder(latent)  # [1, N, 3]
         points = fine.squeeze(0)
     save_point_cloud(points, out_ply)
@@ -63,20 +68,21 @@ def main(args):
         rel_path = os.path.relpath(bin_path, start=os.path.commonpath([bin_path, args.input_glob.split("**")[0]]))
         ply_path = os.path.join(args.decompressed_path, rel_path).replace(".bin", ".bin.ply")
         os.makedirs(os.path.dirname(ply_path), exist_ok=True)
-        decompress(ae, latent, ply_path)
+        decompress(ae, latent, ply_path, args.L)
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Batch Point Cloud Decompression")
+    parser = argparse.ArgumentParser(description="Batch Point Cloud Decompression",
+                                    formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument('input_glob', help='Compressed .bin files glob pattern.',
                         default='./data/ModelNet40_K256_compressed/**/*.bin')
     parser.add_argument('decompressed_path', help='Output folder for decompressed .ply files.',
                         default='./data/ModelNet40_K256_decompressed_ply/')
     parser.add_argument('model_load_folder', help='Directory where to load trained models.',
                         default='./model/K256/')
-    parser.add_argument('N', help='Number of points for the model.',
+    parser.add_argument('--N', type=int, help='Number of points for the model.',
                         default=8192)
-    parser.add_argument('K', help='Latent space dimension.',
-                        default=256)
+    parser.add_argument('--L', type=int, help='Quantization level.',
+                        default=7)
 
     # Device option
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')

@@ -1,16 +1,40 @@
 # Point Cloud Compression (IPDAE-based)
+An improved patch-based deep autoencoder for 3D point cloud geometry compression. This project uses the [IPDAE repository](https://github.com/I2-Multimedia-Lab/IPDAE) ([paper](https://arxiv.org/pdf/2208.02519)) as a starting point, but introduces major model architecture updates for efficient geometry (XYZ) compression on large-scale 3D datasets.
 
-An improved patch-based deep autoencoder for 3D point cloud geometry compression, based on the [IPDAE repository](https://github.com/I2-Multimedia-Lab/IPDAE) ([paper](https://arxiv.org/pdf/2208.02519)). This project focuses on efficient geometry (XYZ) compression for large-scale 3D datasets, with support for ModelNet, ShapeNet, and
+## Model Structure and Updates
+This project builds on the original IPDAE architecture and introduces two new model variants:
+
+### 1. IPDAE (Baseline)
+- **Encoder:** Patch-based PointNet layers extract geometric features from local regions.
+- **Decoder:** Fully connected layers reconstruct patches from compressed representations.
+- **Compression:** Quantization and sub-patch splitting for efficient encoding.
+
+### 2. PointNet++ Encoder + FoldingNet Decoder
+- **Encoder:** PointNet++ layers for advanced local feature extraction.
+- **Decoder:** FoldingNet-based architecture for improved patch reconstruction.
+- **Compression:** Retains quantization and patch-based processing.
+
+### 3. Fast Training Model (PointNet++ Encoder + Simple Decoder)
+- **Encoder:** PointNet++ layers.
+- **Decoder:** Lightweight point cloud decoder.
+- **Compression:** No quantization or sub-patch splitting; designed for rapid experimentation.
+
+- Added a lightweight autoencoder using PointNet++ encoder and a simple point cloud decoder, omitting quantization and sub-patch splitting for rapid experimentation.
+- Additional improvements:
+	- Enhanced patch sampling strategies for better coverage and reconstruction.
+	- Support for larger point clouds and more datasets.
+	- Modular codebase for easier extension and experimentation.
+- The project currently focuses on compressing **3D points (XYZ)** only.  
+- *RGB attribute compression is planned for future updates.*
+
 ## Key Features
 
-- **Autoencoder-based model** for point cloud compression.
+- **Autoencoder-based models** for point cloud compression.
 - Supports **ModelNet**, **ShapeNet**, and **Stanford3D** datasets.
-- Compresses and decompresses **3D points (XYZ)** only.  
-- *RGB attribute compression is planned for future updates.*
+- Compresses and decompresses **3D points (XYZ)** only.
 - Implements evaluation metrics: **PSNR**, **Chamfer Distance**, and **bitrate-per-pointcloud (bpp)**.
 - Installation scripts for both **CPU** and **GPU** machines.
 - Uses the produced `venv_{mode}` (e.g., `venv_gpu`, `venv_cpu`) to run all scripts.
-
 
 ## Requirements
 
@@ -18,9 +42,7 @@ An improved patch-based deep autoencoder for 3D point cloud geometry compression
 - See `requirements_cpu.txt` or `requirements_gpu.txt` for dependencies
 - Datasets: ModelNet, ShapeNet, or Stanford3D (see original [IPDAE documentation](https://github.com/I2-Multimedia-Lab/IPDAE) for dataset preparation)
 
-
 ## Installation
-
 
 Clone the repository and set up the environment:
 
@@ -69,7 +91,6 @@ To prepare your own point clouds, follow the steps below for each dataset:
 	```bash
 	python sample_stanford3d.py ./data/Stanford3dDataset_v1.2_Aligned_Version/Area_1/*/*.txt ./data/Stanford3d_pc/Area_1
 	```
-
 
 ## Usage
 
@@ -124,7 +145,6 @@ Compare original and reconstructed point clouds and display evaluation metrics:
 python compare.py --input_dir <compressed_ply_dir> --recon_dir <decompressed_ply_dir> --csv_path <metrics_csv>
 ```
 
-
 ## (Optional) Jupyter Notebook Usage
 
 You can also use the provided Jupyter notebook for an interactive workflow:
@@ -134,7 +154,6 @@ jupyter notebook point_cloud_compression_demo.ipynb
 ```
 
 The notebook demonstrates environment setup, dataset checks, training, compression, decompression, evaluation, and visualization in a step-by-step manner.
-
 
 ## Notes
 
@@ -147,4 +166,7 @@ This project is for academic and research use. See the original [IPDAE license](
 
 ## Citation
 
-If you use this code, please cite the original IPDAE paper and repository.
+If you use this code, please cite:
+
+- The original IPDAE paper and repository ([IPDAE paper](https://arxiv.org/pdf/2208.02519), [IPDAE repo](https://github.com/I2-Multimedia-Lab/IPDAE))
+- This repository for any new models or results based on the PointNet++ encoder, FoldingNet decoder, or fast training autoencoder variants.

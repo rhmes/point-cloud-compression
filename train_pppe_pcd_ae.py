@@ -25,7 +25,7 @@ parser = argparse.ArgumentParser(
 parser.add_argument('--train_glob', default='./data/ModelNet40_pc_01_8192p/**/train/*.ply')
 parser.add_argument('--model_save_folder', default='./model/P1/')
 parser.add_argument('--N', type=int, default=8192, help='Point cloud resolution.')
-parser.add_argument('--K', type=int, default=8192, help='Latent space dimension.')
+parser.add_argument('--K', type=int, default=256, help='Latent space dimension.')
 parser.add_argument('--L', type=int, default=7, help='Quantization level.')
 parser.add_argument('--lr', type=float, default=0.0005, help='Learning rate.')
 parser.add_argument('--batch_size', type=int, default=4)
@@ -130,6 +130,7 @@ def estimate_bits_per_point_conditional(input, latent_quantized, prob_model):
     
     # # bits = bits + feature_bits
     # feature_bits = feature_bits/(B * N)
+    # fbpp = bits.mean() + feature_bits
 
     # Mean bits-per-point
     fbpp = bits.mean() 
