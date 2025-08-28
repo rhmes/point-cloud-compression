@@ -64,7 +64,7 @@ def main():
         comp_bin_candidates = glob(os.path.join(args.compressed_path, '**', filenames[i].replace('.ply', '.bin')), recursive=True)
         comp_bin_f = comp_bin_candidates[0] if comp_bin_candidates else None
         # Find decompressed file recursively by filename
-        decomp_candidates = glob(os.path.join(args.decompressed_path, '**', filenames[i].replace('.ply', '.ply')), recursive=True)
+        decomp_candidates = glob(os.path.join(args.decompressed_path, '**', filenames[i].replace('.ply', '.bin.ply')), recursive=True)
         decomp_f = decomp_candidates[0] if decomp_candidates else None
 
         if not comp_bin_f or not decomp_f or not os.path.exists(decomp_f):
