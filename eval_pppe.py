@@ -57,7 +57,8 @@ def main():
     filenames = np.array([os.path.split(x)[1] for x in files])
     ipt_files, p2pointPSNRs, p2planePSNRs, chamfer_ds, n_points_inputs, n_points_outputs, bpps = [], [], [], [], [], [], []
     print('Evaluating...')
-    for i in tqdm(range(len(filenames))):
+
+    for i in tqdm(range(len(filenames)), desc="Evaluating", unit="file"):
         input_f = files[i]
         # Find compressed file recursively by filename
         comp_bin_candidates = glob(os.path.join(args.compressed_path, '**', filenames[i].replace('.ply', '.bin')), recursive=True)
