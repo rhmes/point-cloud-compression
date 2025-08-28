@@ -50,28 +50,33 @@ def set_model_and_loss(args):
 # ---------------------------------------------------
 # Checkpoints
 # ---------------------------------------------------
-def find_latest_checkpoint(folder, file_prefix):
+def find_latest_checkpoint(folder, file_prefix, best=False):
     path_list = []
     for prefix in file_prefix:
-        path_list.append(os.path.join(folder, f"{prefix}_latest.pkl"))
+        suffix = 'best' if best else 'latest'
+        path_list.append(os.path.join(folder, f"{prefix}_{suffix}.pkl"))
     return path_list
 
-def load_checkpoints(ae, prob, optimizer, folder):
-    start_step = 0
+def load_checkpoints(ae, prob, optimizer, folder, best=False):
+    if (best):
+        print("Loading best loss checkpoints")
+    # Get latest checkpoint paths
     file_prefix = ['ae', 'prob', 'optimizer', 'global']
-    ae_path, prob_path, opt_path, step_path = find_latest_checkpoint(folder, file_prefix)
+    ae_path, prob_path, opt_path, step_path = find_latest_checkpoint(folder, file_prefix, best=best)
+    # Load autoencoder weights
     if os.path.exists(ae_path):
         ae.load_state_dict(torch.load(ae_path))
         print(f"Loaded AE from {ae_path}")
+    # Load probability model
     if os.path.exists(prob_path):
         prob.load_state_dict(torch.load(prob_path))
         print(f"Loaded Prob model from {prob_path}")
+    # Load optimizer state
     if os.path.exists(opt_path):
         optimizer.load_state_dict(torch.load(opt_path))
         print(f"Loaded optimizer from {opt_path}")
-    if os.path.exists(step_path):
-        start_step = torch.load(step_path) + 1
-        print(f"Resuming at step {start_step}")
+    # Restore checkpoint step
+    start_step = torch.load(step_path) + 1 if (os.path.exists(step_path)) else 0
     return start_step
 
 def dump_checkpoints(ae, prob, optimizer, folder, global_step, best=False):
