@@ -198,7 +198,7 @@ def train_one_epoch(loader, ae, prob, criterion, optimizer, scaler, args, epoch,
             sym = (latent_quantized.view(B, args.S, args.d) + args.L // 2).long()
             sym = sym.clamp(0, args.L - 1)
 
-            feature_bits = pn_kit.estimate_bits_from_pmf(pmf, sym)
+            feature_bits = pn_kit.estimate_bits_from_pmf(pmf, sym) / (B * args.N)
 
             # Step 6: Rate-Distortion Loss
             bpp = (sampled_bits + feature_bits) / (B * args.N)
