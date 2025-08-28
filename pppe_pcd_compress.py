@@ -77,7 +77,7 @@ def main(args):
     ae = PointNet2AE(latent_dim=args.K, L=args.L, npoints=args.N).to(device)
     prob = ConditionalProbabilityModel(latent_dim=args.K).to(device)
     op = torch.optim.Adam(list(ae.parameters()) + list(prob.parameters()), lr=1e-4)  
-    _ = load_checkpoints(ae, prob, op, args.model_load_folder)
+    _ = load_checkpoints(ae, prob, op, args.model_load_folder, best=args.best)
 
     # Find all point clouds
     ply_files = glob.glob(args.input_glob, recursive=True)
@@ -110,6 +110,7 @@ if __name__ == "__main__":
                         default=256)
     parser.add_argument('--L', type=int, help='Quantization level.', 
                         default=7)
+    parser.add_argument('--best', action='store_true')
 
     # Device option
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')

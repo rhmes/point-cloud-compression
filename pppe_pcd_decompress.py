@@ -35,15 +35,16 @@ def save_point_cloud(points, out_path):
 # Decompression Pipeline
 # ----------------------
 
-def decompress(ae, latent, out_ply):
+def decompress(ae, latent, out_ply, qlevel):
     ae.eval()
     with torch.no_grad():
         # latent: [N, d] or [1, N, d]   
         # Quantization step
-        spread = L - 0.2
+        spread = qlevel - 0.2
         quantize = lambda x: torch.round(x)
         latent = torch.sigmoid(latent) * spread - spread / 2
-        latent_quantized = quantize(latent)     
+        latent_quantized = quantize(latent)
+        # Decode latent
         coarse, fine = ae.decoder(latent)  # [1, N, 3]
         points = fine.squeeze(0)
     save_point_cloud(points, out_ply)
@@ -54,11 +55,11 @@ def decompress(ae, latent, out_ply):
 
 def main(args):
     device = torch.device(args.device)
-    # Load model
+    # Load checkpoints
     ae = PointNet2AE().to(device)
     prob = ConditionalProbabilityModel().to(device)
     op = torch.optim.Adam(list(ae.parameters()) + list(prob.parameters()), lr=1e-4)  
-    _ = load_checkpoints(ae, prob, op, args.model_load_folder)
+    _ = load_checkpoints(ae, prob, op, args.model_load_folder, best=args.best)
     # Find all binary files
     bin_files = glob.glob(args.input_glob, recursive=True)
     print(f"Found {len(bin_files)} compressed files.")
@@ -79,10 +80,13 @@ if __name__ == "__main__":
                         default='./data/ModelNet40_K256_decompressed_ply/')
     parser.add_argument('model_load_folder', help='Directory where to load trained models.',
                         default='./model/K256/')
-    parser.add_argument('--N', type=int, help='Number of points for the model.',
+    parser.add_argument('--N', help='Number of points for the model.',
                         default=8192)
-    parser.add_argument('--L', type=int, help='Quantization level.',
+    parser.add_argument('--K', help='Latent space dimension.',
+                        default=256)
+    parser.add_argument('--L', type=int, help='Quantization level.', 
                         default=7)
+    parser.add_argument('--best', action='store_true')
 
     # Device option
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
