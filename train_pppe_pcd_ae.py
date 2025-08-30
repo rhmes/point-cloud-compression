@@ -9,7 +9,7 @@ import contextlib
 
 import pn_kit
 import pppe_pcd_ae as AE  # AE: PointNet++ Encoder + PCN Decoder
-from pppe_pcd_ae import ConditionalProbabilityModel  # <-- NEW: conditional probability model
+from pppe_pcd_ae import estimate_bits_per_point_conditional 
 
 torch.cuda.manual_seed(11)
 torch.manual_seed(11)
@@ -41,10 +41,11 @@ parser.add_argument('--reset', action='store_true')
 # Model + Loss
 # ---------------------------------------------------
 def set_model_and_loss(args):
-    ae = AE.PointCloudAE(latent_dim=args.K, L=args.L, npoints=args.N).to(args.device)   # PointNet++ + PCN
-    prob = ConditionalProbabilityModel(latent_dim=args.K).to(args.device)
-
-    criterion = AE.get_loss().to(args.device)
+    # ae = AE.EnhancedPointCloudAE(latent_dim=args.K, L=args.L, npoints=args.N).to(args.device)   # PointNet++ + PCN
+    # prob = AE.ConditionalProbabilityModel(latent_dim=args.K).to(args.device)
+    ae = AE.PointCloudAE(latent_dim=args.K, latent_bins=args.L, npoints=args.N).to(args.device)   # PointNet++ + PCN
+    prob = ae.prob
+    criterion = AE.get_loss("chamfer").to(args.device)
     return ae, prob, criterion
 
 # ---------------------------------------------------
@@ -77,6 +78,7 @@ def load_checkpoints(ae, prob, optimizer, folder, best=False):
         print(f"Loaded optimizer from {opt_path}")
     # Restore checkpoint step
     start_step = torch.load(step_path) + 1 if (os.path.exists(step_path)) else 0
+    print(f"Resuming from step {start_step}")
     return start_step
 
 def dump_checkpoints(ae, prob, optimizer, folder, global_step, best=False):
@@ -94,60 +96,82 @@ def build_dataloader(args, points):
     dataset = Data.TensorDataset(points_tensor, points_tensor)
     loader = Data.DataLoader(dataset, batch_size=args.batch_size,
                              shuffle=True, num_workers=4,
-                             pin_memory=(args.device == args.device))
+                             pin_memory=(args.device == 'cuda'))
     return loader
 
-# ---------------------------------------------------
-# Conditional FBPP Calculation
-# ---------------------------------------------------
-def estimate_bits_per_point_conditional(input, latent_quantized, prob_model):
-    """
-    Estimate bits-per-point (fbpp) using ConditionalProbabilityModel.
-    Args:
-        input: (B, C, N) tensor, input features
-        latent_quantized: (B, C, N) tensor, quantized latent
-        prob_model: ConditionalProbabilityModel
-    Returns:
-        fbpp: scalar tensor
-    """
-    # Get mean and scale from probability model
-    mean, scale, pmf = prob_model(input)  # (B, C, N)
-    # Clamp scale for numerical stability
-    scale = scale.clamp(min=1e-6)
-    # # Estimate feature bits from PMF
-    # latent_quantized = latent_quantized.long()
+# # ---------------------------------------------------
+# # Conditional FBPP Calculation
+# # ---------------------------------------------------
+# def estimate_bits_per_point_conditional(input, latent_quantized, prob_model):
+#     """
+#     Estimate bits-per-point (fbpp) using ConditionalProbabilityModel.
+#     Args:
+#         input: (B, C, N) tensor, input features
+#         latent_quantized: (B, C, N) tensor, quantized latent
+#         prob_model: ConditionalProbabilityModel
+#     Returns:
+#         fbpp: scalar tensor
+#     """
+#     # Get mean and scale from probability model
+#     mean, scale, pmf = prob_model(input)  # (B, C, N)
+#     # Clamp scale for numerical stability
+#     scale = scale.clamp(min=1e-6)
+#     # # Estimate feature bits from PMF
+#     # latent_quantized = latent_quantized.long()
 
-    # B, N, C = input.shape
-    # # Convert [B, N] to [B, N, 1]
-    # if latent_quantized.dim() == 2:
-    #     latent_quantized = latent_quantized.unsqueeze(-1)
+#     # B, N, C = input.shape
+#     # # Convert [B, N] to [B, N, 1]
+#     # if latent_quantized.dim() == 2:
+#     #     latent_quantized = latent_quantized.unsqueeze(-1)
 
-    # latent_quantized = latent_quantized.clamp(min=0, max=latent_quantized.size(1) - 1)
-    # feature_bits = pn_kit.estimate_bits_from_pmf(pmf, latent_quantized)
+#     # latent_quantized = latent_quantized.clamp(min=0, max=latent_quantized.size(1) - 1)
+#     # feature_bits = pn_kit.estimate_bits_from_pmf(pmf, latent_quantized)
 
-    # Gaussian likelihood (log prob in nats)
-    mean = mean.permute(0, 2, 1)
-    scale = scale.permute(0, 2, 1)
-    log_probs = -0.5 * ((input - mean) / scale) ** 2 - torch.log(scale * (2 * torch.pi) ** 0.5)
-    # Convert nats to bits
-    bits = -log_probs / torch.log(torch.tensor(2.0, device=input.device, dtype=input.dtype))
-    # Add feature bits
+#     # Gaussian likelihood (log prob in nats)
+#     mean = mean.permute(0, 2, 1)
+#     scale = scale.permute(0, 2, 1)
+#     log_probs = -0.5 * ((input - mean) / scale) ** 2 - torch.log(scale * (2 * torch.pi) ** 0.5)
+#     # Convert nats to bits
+#     bits = -log_probs / torch.log(torch.tensor(2.0, device=input.device, dtype=input.dtype))
+#     # Add feature bits
     
-    # # bits = bits + feature_bits
-    # feature_bits = feature_bits/(B * N)
-    # fbpp = bits.mean() + feature_bits
+#     # # bits = bits + feature_bits
+#     # feature_bits = feature_bits/(B * N)
+#     # fbpp = bits.mean() + feature_bits
 
-    # Mean bits-per-point
-    fbpp = bits.mean() 
-    return fbpp
+#     # Mean bits-per-point
+#     fbpp = bits.mean() 
+#     return fbpp
+
+
+def compute_dataset_norm(loader):
+    all_points = []
+    for batch_x, _ in loader:
+        all_points.append(batch_x)  # (B, N, 3)
+    all_points = torch.cat(all_points, dim=0)  # (Total, N, 3)
+
+    # Flatten to (num_points, 3)
+    flat = all_points.reshape(-1, 3)
+
+    center = flat.mean(dim=0)                     # dataset mean
+    diffs = flat - center
+    longest = diffs.norm(dim=1).max()             # farthest point from center
+
+    return center, longest
+def normalize_with_dataset_stats(batch_x, center, longest, margin=0.01):
+    # subtract dataset mean
+    batch_x = batch_x - center
+    # scale by dataset radius
+    batch_x = batch_x / (longest + margin)
+    return batch_x
 
 # ---------------------------------------------------
 # Training Loop
 # ---------------------------------------------------
-def train_one_epoch(loader, ae, prob, criterion, optimizer, scaler, args, epoch, global_step, pbar,
-                    λ=1.0, grad_clip=1.0, anomaly_threshold=50.0):
+def train_one_epoch(loader, ae, prob, criterion, optimizer, scheduler, scaler, args, epoch, global_step, pbar,
+                    λ=1.0, grad_clip=1.0):
     ae.train()
-    prob.train()
+    # prob.train()
     losses, dists, rates = [], [], []
 
     if not hasattr(train_one_epoch, "best_loss"):
@@ -162,28 +186,29 @@ def train_one_epoch(loader, ae, prob, criterion, optimizer, scaler, args, epoch,
             break
 
         batch_x = batch_x.to(device)
-        batch_x, center, longest = pn_kit.normalize(batch_x, margin=0.01)
+        # batch_x, center, longest = pn_kit.normalize(batch_x, margin=0.01)
+        # batch_x = normalize_with_dataset_stats(batch_x, args.center, args.longest)
 
         optimizer.zero_grad()
         autocast_ctx = torch.cuda.amp.autocast() if use_cuda else contextlib.nullcontext()
 
+        # warmup for λ
         λ_eff = λ * min(1.0, global_step / max(1, args.warmup_steps))
 
         with autocast_ctx:
-            recon, latent, feats, latent_quantized = ae(batch_x)
-            fbpp = estimate_bits_per_point_conditional(batch_x, latent_quantized, prob)
+            # forward pass
+            coarse, recon, feats, y_cont = ae(batch_x)   
+            fbpp = estimate_bits_per_point_conditional(y_cont, feats, prob_model=prob)  
+            # recon_norm, _, _ = normalize_with_dataset_stats(recon, margin=0.01)
+            recon_norm = recon
+            loss, dist, rate = criterion(recon_norm.float(), batch_x.float(), fbpp, λ_eff)
 
-            recon = recon.float()
-            batch_x = batch_x.float()
-            loss, dist, rate = criterion(recon, batch_x, fbpp, λ_eff)
-
-        # Clamp without detaching
-        loss = torch.clamp(loss, min=0.0, max=anomaly_threshold)
-
+        # anomaly check
         if torch.isnan(loss) or torch.isinf(loss):
-            print(f"[Warning] Loss anomaly detected: {loss.item():.4f} to {anomaly_threshold}")
+            print(f"[Warning] Loss anomaly detected: {loss.item():.4f}")
             continue
 
+        # backward + optimizer step
         if scaler:
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)
@@ -200,24 +225,28 @@ def train_one_epoch(loader, ae, prob, criterion, optimizer, scaler, args, epoch,
         dists.append(dist.item())
         rates.append(rate.item())
 
-        pbar.set_postfix({"loss": f"{loss.item():.4f}", "dist": f"{dist.item():.4f}"})
+        # progress bar
+        pbar.set_postfix({
+            "loss": f"{loss.item():.4f}", 
+            "dist": f"{dist.item():.4f}", 
+            "rate": f"{rate.item():.4f}",
+            "lr": f"{optimizer.param_groups[0]['lr']:.6f}"
+        })
         pbar.update(1)
 
+        # logging + checkpointing
         if global_step % args.step_window == 0:
-            if loss.item() < train_one_epoch.best_loss:
-                train_one_epoch.best_loss = loss.item()
+            avg_loss, avg_dist, avg_rate = np.mean(losses), np.mean(dists), np.mean(rates)
+            if avg_loss < train_one_epoch.best_loss:
+                train_one_epoch.best_loss = avg_loss
                 train_one_epoch.best_step = global_step
                 dump_checkpoints(ae, prob, optimizer, args.model_save_folder, train_one_epoch.best_step, best=True)
             print(f"[Epoch {epoch}] Step {global_step} | "
-                  f"Loss: {np.mean(losses):.5f} | Dist: {np.mean(dists):.5f} | Rate: {np.mean(rates):.5f}")
+                  f"Loss: {avg_loss:.5f} | Dist: {avg_dist:.5f} | Rate: {avg_rate:.5f}")
             losses, dists, rates = [], [], []
             dump_checkpoints(ae, prob, optimizer, args.model_save_folder, global_step, best=False)
 
-        if global_step % args.lr_decay_steps == 0:
-            args.lr *= args.lr_decay
-            for g in optimizer.param_groups:
-                g["lr"] = args.lr
-            print(f"LR decayed to {args.lr:.6f} at step {global_step}")
+    scheduler.step()
 
     return global_step
 
@@ -235,13 +264,27 @@ def main():
     loader = build_dataloader(args, points)
     ae, prob, criterion = set_model_and_loss(args)
 
+    # optimizer = torch.optim.Adam(
+    #     list(ae.parameters()) + list(prob.parameters()), lr=args.lr
+    # )
     optimizer = torch.optim.Adam(
-        list(ae.parameters()) + list(prob.parameters()), lr=args.lr
+        list(ae.parameters()), lr=args.lr
     )
+
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=100)
+
     scaler = torch.cuda.amp.GradScaler() if args.device == 'cuda' else None
 
+    # Compute once
+    args.center, args.longest = compute_dataset_norm(loader)
+
+    # Save for reuse (so val/test use same stats!)
+    torch.save({"center": args.center, "longest": args.longest}, 
+               os.path.join(args.model_save_folder, "dataset_norm.pt"))
+
+
     if not args.reset:
-        start_step = load_checkpoints(ae, prob, optimizer, args.model_save_folder)
+        start_step = load_checkpoints(ae, prob, optimizer,args.model_save_folder)
     else:
         start_step = 0
         print("Starting training from scratch.")
@@ -251,7 +294,7 @@ def main():
 
     global_step = start_step
     for epoch in range(9999):
-        global_step = train_one_epoch(loader, ae, prob, criterion, optimizer, scaler, args, epoch, global_step, pbar)
+        global_step = train_one_epoch(loader, ae, prob, criterion, optimizer, scheduler, scaler, args, epoch, global_step, pbar)
         if global_step > args.max_steps:
             break
 
