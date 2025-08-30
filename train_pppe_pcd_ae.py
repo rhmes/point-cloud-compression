@@ -257,10 +257,14 @@ def main():
 
     os.makedirs(args.model_save_folder, exist_ok=True)
 
-    files = np.array(glob(args.train_glob, recursive=True))
-    points = pn_kit.read_point_clouds(files)
-    print(f"Loaded {points.shape} points")
-
+    npy_path = os.path.join(os.path.dirname(args.train_glob.split("*")[0]), "train.npy")
+    if os.path.exists(npy_path):
+        print(f"Loading cached point clouds from {npy_path}")
+        points = np.load(npy_path)
+    else:
+        files = np.array(glob(args.train_glob, recursive=True))
+        points = pn_kit.read_point_clouds(files)
+        print(f"Loaded {points.shape} points")
     loader = build_dataloader(args, points)
     ae, prob, criterion = set_model_and_loss(args)
 
